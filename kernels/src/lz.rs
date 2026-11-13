@@ -36,7 +36,7 @@
 //!   flush literals [lit, n)
 //!   flush [a, b): while a < b: k = min(128, b - a); emit k - 1, input[a..a+k]; a += k
 //!
-//! run(): PASSES = 2 identical passes over the same input.
+//! run(): PASSES = 12 identical passes over the same input.
 //!   total = 0x811C9DC5
 //!   repeat PASSES times:
 //!     c = pass()
@@ -48,7 +48,7 @@
 //!   if out != input (length or any byte): return fold(acc, 0xDEADBEEF)
 //!   for j = 0, 1024, 2048, ... < clen: acc = fold(acc, comp[j])
 //!   return acc
-//!   (Every pass returns the same c, so run() = fold(fold(START, c), c).)
+//!   (Every pass returns the same c, so run() = START folded with c PASSES times.)
 //!
 //! Work: per pass, `size` input bytes go through the compressor once and come
 //! out of the decompressor once (plus one compare); one run = PASSES passes.
@@ -65,7 +65,7 @@ const MIN_MATCH: usize = 4;
 const MAX_MATCH: usize = 131;
 const MAX_LIT: usize = 128;
 /// Compress + decompress passes per `run` call.
-const PASSES: u32 = 2;
+const PASSES: u32 = 12;
 
 struct State {
     input: &'static mut [u8],
@@ -83,6 +83,14 @@ static STATE: Global<State> = Global::new(State {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lz_prepare(seed: u32, size: u32) -> u32 {
+    {
+        // SAFETY: single-threaded instance; no other reference is alive.
+        let s = unsafe { STATE.get() };
+        s.input = &mut [];
+        s.comp = &mut [];
+        s.out = &mut [];
+        s.table = &mut [];
+    }
     arena::reset();
     let n = size as usize;
     let (Some(input), Some(comp), Some(out), Some(table)) = (

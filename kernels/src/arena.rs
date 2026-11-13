@@ -20,6 +20,7 @@ fn base() -> usize {
     if b != 0 {
         return b;
     }
+    // First call happens while memory is still small, so this cannot wrap.
     let b = wasm32::memory_size(0) * PAGE;
     BASE.store(b, Relaxed);
     NEXT.store(b, Relaxed);
@@ -41,9 +42,10 @@ pub fn alloc_slice<T: Copy>(len: usize) -> Option<&'static mut [T]> {
     let bytes = len.checked_mul(core::mem::size_of::<T>())?;
     let start = NEXT.load(Relaxed).checked_add(align - 1)? & !(align - 1);
     let end = start.checked_add(bytes)?;
-    let have = wasm32::memory_size(0) * PAGE;
-    if end > have {
-        let pages = (end - have).div_ceil(PAGE);
+    // In u64: at the full 4 GiB, pages * PAGE would wrap to 0 in usize.
+    let have = wasm32::memory_size(0) as u64 * PAGE as u64;
+    if end as u64 > have {
+        let pages = (end as u64 - have).div_ceil(PAGE as u64) as usize;
         if wasm32::memory_grow(0, pages) == usize::MAX {
             return None;
         }

@@ -39,7 +39,7 @@ mod trace;
 /// changes. JS checks this against `ABI_VERSION` in src/lib/harness/wasm.ts.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    3
+    4
 }
 
 #[panic_handler]

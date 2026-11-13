@@ -10,15 +10,17 @@
 //!     (v & 0xFF first). The last chunk is truncated if size % 4 != 0
 //!     (it still consumes one whole next_u32()).
 //!
-//! run():
-//!   d = SHA-256(buf) exactly as FIPS 180-4 (0x80 padding, 64-bit big-endian
-//!   bit length). d is taken as 8 u32 words H0..H7 (big-endian word value, so
-//!   H0 is the first 4 digest bytes read as a big-endian u32).
+//! run(): PASSES = 8 identical passes.
 //!   acc = 0x811C9DC5
-//!   for w in H0..H7: acc = (acc ^ w) * 0x01000193   (wrapping u32)
+//!   repeat PASSES times:
+//!     d = SHA-256(buf) exactly as FIPS 180-4 (0x80 padding, 64-bit big-endian
+//!     bit length). d is taken as 8 u32 words H0..H7 (big-endian word value, so
+//!     H0 is the first 4 digest bytes read as a big-endian u32).
+//!     for w in H0..H7: acc = (acc ^ w) * 0x01000193   (wrapping u32)
 //!   return acc
 //!
-//! Work: `size` bytes hashed once per run.
+//! Work: `size` bytes hashed PASSES times per run. Passes keep the buffer small
+//! (one instance per core in the multi-core test) while each run stays long.
 
 use crate::arena;
 use crate::checksum::{Rng, START, fold};
@@ -29,6 +31,9 @@ struct State {
 }
 
 static STATE: Global<State> = Global::new(State { buf: &mut [] });
+
+/// Hash passes per `run` call.
+const PASSES: u32 = 8;
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -111,6 +116,8 @@ fn sha256(data: &[u8]) -> [u32; 8] {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn sha256_prepare(seed: u32, size: u32) -> u32 {
+    // SAFETY: single-threaded instance; no other reference is alive.
+    unsafe { STATE.get() }.buf = &mut [];
     arena::reset();
     let Some(buf) = arena::alloc_slice::<u8>(size as usize) else {
         return 1;
@@ -130,5 +137,11 @@ pub extern "C" fn sha256_prepare(seed: u32, size: u32) -> u32 {
 pub extern "C" fn sha256_run() -> u32 {
     // SAFETY: as above.
     let s = unsafe { STATE.get() };
-    sha256(s.buf).iter().fold(START, |acc, &w| fold(acc, w))
+    let mut acc = START;
+    for _ in 0..PASSES {
+        // black_box stops the compiler from hashing once and reusing the digest.
+        let buf: &[u8] = core::hint::black_box(&*s.buf);
+        acc = sha256(buf).iter().fold(acc, |a, &w| fold(a, w));
+    }
+    acc
 }

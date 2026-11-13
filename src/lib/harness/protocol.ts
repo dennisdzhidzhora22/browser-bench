@@ -1,16 +1,23 @@
 // Messages between the page and a benchmark worker.
 //
-//   page                      worker
-//   init            ───────▶  compile + instantiate wasm, check ABI
-//                   ◀───────  ready | error
-//   run {id, ...}   ───────▶  prepare (untimed), warm-up, timed samples
-//                   ◀───────  result {id} | error {id}
+//   page                        worker
+//   init {module, spinMs} ───▶  instantiate wasm, check ABI, busy-spin
+//                         ◀───  ready | error
+//   run {id, ...}         ───▶  prepare (untimed), warm-up, timed samples
+//                         ◀───  result {id} | error {id}
 //
+// The page compiles the wasm module once and sends it to every worker.
 // Cancel = Worker.terminate(). Nothing is posted while a timed region is
 // open (docs/SPEC.md, section 5).
 
 export interface InitRequest {
   type: 'init';
+  module: WebAssembly.Module;
+  /**
+   * Busy-spin this long before replying `ready`, so the OS moves the thread
+   * to a fast core and raises its clock before the first measurement.
+   */
+  spinMs: number;
 }
 
 export interface RunRequest {
@@ -20,7 +27,17 @@ export interface RunRequest {
   kernel: string;
   seed: number;
   size: number;
-  samples: number;
+  /** Always take at least this many timed samples. */
+  minSamples: number;
+  /** Never take more than this many. */
+  maxSamples: number;
+  /**
+   * Stop early once the `minSamples` fastest samples agree within this
+   * fraction: (max - min) / median of those samples.
+   */
+  targetSpread: number;
+  /** Stop adding samples past `minSamples` once this much time has passed. */
+  maxMs: number;
 }
 
 export type ToWorker = InitRequest | RunRequest;
@@ -40,7 +57,7 @@ export interface RunResult {
   checksumConsistent: boolean;
   /** Milliseconds spent in `prepare` (untimed work, reported for info). */
   prepareMs: number;
-  /** Milliseconds per sample, measured inside the worker. Transferred, not copied. */
+  /** Milliseconds per sample, in the order taken. Transferred, not copied. */
   times: Float64Array;
 }
 

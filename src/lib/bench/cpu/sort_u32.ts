@@ -7,7 +7,9 @@ export const sortU32: KernelDef = {
   stresses: 'branches, cache',
   unit: 'M elements/s',
   seed: 1,
-  sizes: { smoke: 1_000, standard: 6_000_000 },
-  expected: { smoke: 2_766_581_911, standard: 3_616_629_640 },
+  // standard: ~620-690 ms per run on the reference PC (Node); headroom over the
+  // 250 ms floor for faster desktops.
+  sizes: { smoke: 1_000, standard: 8_000_000 },
+  expected: { smoke: 2_766_581_911, standard: 329_145_997 },
   work: (size) => size / 1e6,
 };

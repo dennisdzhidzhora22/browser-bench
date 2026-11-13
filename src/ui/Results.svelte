@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { KernelOutcome } from '../lib/harness/orchestrator.ts';
+  import { NOISY_SPREAD, type KernelOutcome } from '../lib/harness/orchestrator.ts';
 
   let { outcomes }: { outcomes: KernelOutcome[] } = $props();
 
@@ -8,6 +8,12 @@
     if (n >= 100) return n.toFixed(0);
     if (n >= 10) return n.toFixed(1);
     return n.toFixed(2);
+  }
+
+  function status(o: KernelOutcome): string {
+    if (o.hidden) return 'hidden';
+    if (!o.checksumOk) return o.error ?? 'failed';
+    return o.noisy ? 'noisy' : 'ok';
   }
 </script>
 
@@ -24,17 +30,26 @@
   </thead>
   <tbody>
     {#each outcomes as o (o.def.id)}
-      <tr data-testid="row-{o.def.id}">
+      <tr data-testid="row-{o.def.id}" class:noisy={o.valid && o.noisy}>
         <td>
           {o.def.name}
           <span class="muted">{o.def.stresses}</span>
         </td>
-        <td class="r num" data-testid="value">{o.checksumOk ? fmt(o.throughput) : '—'}</td>
+        <td class="r num" data-testid="value">{o.valid ? fmt(o.throughput) : '—'}</td>
         <td>{o.def.unit}</td>
         <td class="r num">{o.stats ? `${o.stats.median.toFixed(1)} ms` : '—'}</td>
-        <td class="r num">{o.stats ? `${(o.stats.spread * 100).toFixed(1)} %` : '—'}</td>
-        <td data-testid="checksum" data-ok={o.checksumOk} title={o.error ?? ''}>
-          {o.checksumOk ? 'ok' : (o.error ?? 'failed')}
+        <td class="r num" title={o.samples ? `${o.samples} samples taken` : ''}>
+          {o.stats ? `${(o.stats.spread * 100).toFixed(1)} %` : '—'}
+        </td>
+        <td
+          data-testid="checksum"
+          data-ok={o.checksumOk}
+          data-valid={o.valid}
+          data-noisy={o.noisy}
+          title={o.error ??
+            (o.noisy ? `fastest samples differ by more than ${NOISY_SPREAD * 100} %` : '')}
+        >
+          {status(o)}
         </td>
       </tr>
     {/each}
@@ -60,5 +75,8 @@
     display: block;
     font-size: 0.85em;
     opacity: 0.6;
+  }
+  .noisy td {
+    background: color-mix(in srgb, #d97706 12%, transparent);
   }
 </style>

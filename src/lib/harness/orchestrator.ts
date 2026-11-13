@@ -5,21 +5,49 @@
 // happens on the page until the reply arrives.
 
 import type { KernelDef, SizeId } from '../bench/types.ts';
-import type { FromWorker, RunRequest, RunResult } from './protocol.ts';
-import { summarize, type SampleStats } from './stats.ts';
+import { loadKernelModule } from './module.ts';
+import type { FromWorker, InitRequest, RunRequest, RunResult } from './protocol.ts';
+import { fastest, summarize, type SampleStats } from './stats.ts';
 
 export type RunMode = 'quick' | 'full';
 
-/** Timed samples per kernel (docs/SPEC.md, section 5). */
-export const SAMPLES: Record<RunMode, number> = { quick: 3, full: 7 };
+export interface SamplingPlan {
+  /** Samples always taken; results use the `minSamples` fastest. */
+  minSamples: number;
+  maxSamples: number;
+  /** Stop early once the fastest `minSamples` agree within this fraction. */
+  targetSpread: number;
+  /** Stop adding samples past `minSamples` after this many ms. */
+  maxMs: number;
+}
+
+/** Sampling per mode (docs/SPEC.md, section 5). */
+export const SAMPLING: Record<RunMode, SamplingPlan> = {
+  quick: { minSamples: 3, maxSamples: 9, targetSpread: 0.05, maxMs: 3_000 },
+  full: { minSamples: 7, maxSamples: 21, targetSpread: 0.03, maxMs: 8_000 },
+};
+
+/** A result whose fastest samples still disagree by more than this is flagged noisy. */
+export const NOISY_SPREAD = 0.1;
+
+/** Busy-spin before the first kernel (see InitRequest.spinMs). */
+export const SPIN_MS = 500;
 
 export interface KernelOutcome {
   def: KernelDef;
-  /** Undefined when the kernel failed; see `error`. */
+  /** Stats over the `minSamples` fastest samples. Undefined when the kernel failed. */
   stats?: SampleStats;
-  /** Headline number in `def.unit`, from the median sample. */
+  /** Headline number in `def.unit`, from `stats.median`. */
   throughput?: number;
+  /** Timed samples actually taken. */
+  samples?: number;
   checksumOk: boolean;
+  /** True when the tab was hidden while this kernel ran. The result is discarded. */
+  hidden: boolean;
+  /** True when the fastest samples still spread more than NOISY_SPREAD. */
+  noisy: boolean;
+  /** Valid = checksum ok and not hidden. Noisy results are valid but flagged. */
+  valid: boolean;
   error?: string;
 }
 
@@ -31,6 +59,10 @@ export interface RunOptions {
   beforeKernel?: (index: number, def: KernelDef) => Promise<void> | void;
   /** Called after each kernel finishes. */
   afterKernel?: (index: number, outcome: KernelOutcome) => void;
+  /** Injection points for tests. */
+  makeWorker?: () => Worker;
+  loadModule?: () => Promise<WebAssembly.Module>;
+  spinMs?: number;
 }
 
 export class Cancelled extends Error {
@@ -50,8 +82,24 @@ export function createWorker(): Worker {
   });
 }
 
-export function startRun(opts: RunOptions, makeWorker: () => Worker = createWorker): Run {
-  const worker = makeWorker();
+/** Counts visibility losses, so a kernel can tell whether the tab was hidden while it ran. */
+function watchVisibility(): { hiddenNow(): boolean; losses(): number; stop(): void } {
+  const doc = (globalThis as { document?: Document }).document;
+  if (!doc) return { hiddenNow: () => false, losses: () => 0, stop: () => {} };
+  let losses = 0;
+  const onChange = () => {
+    if (doc.hidden) losses++;
+  };
+  doc.addEventListener('visibilitychange', onChange);
+  return {
+    hiddenNow: () => doc.hidden,
+    losses: () => losses,
+    stop: () => doc.removeEventListener('visibilitychange', onChange),
+  };
+}
+
+export function startRun(opts: RunOptions): Run {
+  const worker = (opts.makeWorker ?? createWorker)();
   let pending: { resolve(m: FromWorker): void; reject(e: Error): void } | undefined;
   let cancelled = false;
   /** Set once the worker is gone; later sends reject with it instead of hanging. */
@@ -74,7 +122,7 @@ export function startRun(opts: RunOptions, makeWorker: () => Worker = createWork
     fail(new Error(e.message || 'worker crashed'));
   };
 
-  const send = (msg: unknown) =>
+  const send = (msg: InitRequest | RunRequest) =>
     new Promise<FromWorker>((resolve, reject) => {
       if (cancelled) return reject(new Cancelled());
       if (dead) return reject(dead);
@@ -82,9 +130,14 @@ export function startRun(opts: RunOptions, makeWorker: () => Worker = createWork
       worker.postMessage(msg);
     });
 
+  const visibility = watchVisibility();
+  const plan = SAMPLING[opts.mode];
+
   const done = (async () => {
     try {
-      const ready = await send({ type: 'init' });
+      const module = await (opts.loadModule ?? loadKernelModule)();
+      if (cancelled) throw new Cancelled();
+      const ready = await send({ type: 'init', module, spinMs: opts.spinMs ?? SPIN_MS });
       if (ready.type === 'error') throw new Error(`worker init failed: ${ready.message}`);
 
       const outcomes: KernelOutcome[] = [];
@@ -94,21 +147,25 @@ export function startRun(opts: RunOptions, makeWorker: () => Worker = createWork
         if (cancelled) throw new Cancelled();
 
         const size = def.sizes[opts.size];
-        const req: RunRequest = {
+        const lossesBefore = visibility.losses();
+        const hiddenAtStart = visibility.hiddenNow();
+        const reply = await send({
           type: 'run',
           id: i,
           kernel: def.id,
           seed: def.seed,
           size,
-          samples: SAMPLES[opts.mode],
-        };
-        const reply = await send(req);
-        const outcome = toOutcome(def, size, opts.size, reply, i);
+          ...plan,
+        });
+        const hidden =
+          hiddenAtStart || visibility.hiddenNow() || visibility.losses() !== lossesBefore;
+        const outcome = toOutcome(def, size, opts.size, opts.mode, reply, i, hidden);
         outcomes.push(outcome);
         opts.afterKernel?.(i, outcome);
       }
       return outcomes;
     } finally {
+      visibility.stop();
       worker.terminate();
     }
   })();
@@ -122,34 +179,52 @@ export function startRun(opts: RunOptions, makeWorker: () => Worker = createWork
   };
 }
 
+function failed(def: KernelDef, error: string, hidden = false): KernelOutcome {
+  return { def, checksumOk: false, hidden, noisy: false, valid: false, error };
+}
+
 function toOutcome(
   def: KernelDef,
   size: number,
   sizeId: SizeId,
+  mode: RunMode,
   reply: FromWorker,
   id: number,
+  hidden: boolean,
 ): KernelOutcome {
-  if (reply.type === 'error') return { def, checksumOk: false, error: reply.message };
+  if (reply.type === 'error') return failed(def, reply.message, hidden);
   if (reply.type !== 'result' || reply.id !== id) {
-    return { def, checksumOk: false, error: `unexpected reply: ${reply.type}` };
+    return failed(def, `unexpected reply: ${reply.type}`, hidden);
   }
-  return resultToOutcome(def, size, sizeId, reply);
+  return resultToOutcome(def, size, sizeId, mode, reply, hidden);
 }
 
 export function resultToOutcome(
   def: KernelDef,
   size: number,
   sizeId: SizeId,
+  mode: RunMode,
   r: RunResult,
+  hidden = false,
 ): KernelOutcome {
-  const stats = summarize(r.times);
+  const stats = summarize(fastest(r.times, SAMPLING[mode].minSamples));
   const seconds = stats.median / 1000;
   const checksumOk = r.checksumConsistent && r.checksum === def.expected[sizeId] >>> 0;
+  const valid = checksumOk && !hidden;
+  const error = !checksumOk
+    ? 'checksum mismatch: result invalid'
+    : hidden
+      ? 'tab was hidden during this test: result discarded'
+      : undefined;
   return {
     def,
     stats,
     throughput: seconds > 0 ? def.work(size) / seconds : undefined,
+    samples: r.times.length,
     checksumOk,
-    ...(checksumOk ? {} : { error: 'checksum mismatch: result invalid' }),
+    hidden,
+    noisy: stats.spread > NOISY_SPREAD,
+    valid,
+    ...(error ? { error } : {}),
   };
 }

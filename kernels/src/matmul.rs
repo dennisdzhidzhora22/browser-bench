@@ -69,7 +69,9 @@ fn prepare(seed: u32, size: u32) -> u32 {
     if n == 0 || !n.is_multiple_of(8) {
         return 2;
     }
-    let len = n * n;
+    let Some(len) = n.checked_mul(n) else {
+        return 2;
+    };
     let (Some(a), Some(b), Some(c)) = (
         arena::alloc_slice::<f64>(len),
         arena::alloc_slice::<f64>(len),

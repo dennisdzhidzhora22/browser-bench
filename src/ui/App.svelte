@@ -44,14 +44,18 @@
   async function settle(): Promise<void> {
     await tick();
     await new Promise<void>((resolve) => {
-      // rAF never fires in a hidden tab; the timeout keeps the run moving.
-      const t = setTimeout(resolve, 100);
-      requestAnimationFrame(() =>
+      // rAF never fires in a hidden tab; the timeout keeps the run moving and
+      // cancels the frame so it cannot fire later, mid-measurement.
+      const frame = requestAnimationFrame(() =>
         setTimeout(() => {
-          clearTimeout(t);
+          clearTimeout(fallback);
           resolve();
         }, 0),
       );
+      const fallback = setTimeout(() => {
+        cancelAnimationFrame(frame);
+        resolve();
+      }, 100);
     });
   }
 
@@ -150,6 +154,11 @@
   {#if outcomes.length > 0}
     <Results {outcomes} />
   {/if}
+
+  <p class="muted note">
+    These are browser scores: this PC's speed through this browser. For steady numbers, keep
+    this window in front, plug in a laptop, and use the best-performance power mode.
+  </p>
 {/if}
 
 <style>
