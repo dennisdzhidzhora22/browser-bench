@@ -25,7 +25,9 @@ pub mod arena;
 pub mod checksum;
 pub mod global;
 
+mod lz;
 mod mix;
+mod sha256;
 
 /// Bumped whenever any kernel's work, sizes or checksum changes. JS checks this
 /// against `ABI_VERSION` in src/lib/harness/wasm.ts.
