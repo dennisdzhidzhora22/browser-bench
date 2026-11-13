@@ -81,12 +81,16 @@ How it works (M2):
 
 - Kernels whose standard size needs a lot of memory have a smaller `multi` size, so one
   instance per core stays under ~16 MB of wasm memory each.
-- `run` is repeated (`reps`) to fill a ~300 ms timed window per sample.
-- Every sample is released by a shared barrier. Its time is the **wall time** from the first
-  worker's start to the last worker's finish, so a slow core holds the whole sample back,
-  as it would a real parallel job.
+- `multi` sizes also keep each `run` short (~25–50 ms) so timed windows are fine-grained.
+- Every sample is released by a shared barrier. Each worker runs `run` for a fixed-time
+  window (150 ms Quick, 300 ms Full) and counts its reps. The sample's score is the **sum of
+  every worker's rate**, so every core's work counts and one slow core does not hold the
+  others back. (M2 review changed this from wall time, which measured the slowest core.)
 - The scaling ratio's baseline is one worker running the same size and window inside this
-  test, not the single-core component's result (which may use a different size).
+  test, after a short spin, not the single-core component's result (which may use a
+  different size).
+- A worker that fails wakes the others and stops the group; barrier waits time out after
+  30 s. The kernel is marked failed and the next kernel gets a fresh pool.
 
 ### 3.3 Memory
 
