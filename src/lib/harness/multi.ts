@@ -26,10 +26,18 @@ import { fastest, summarize, type SampleStats } from './stats.ts';
 
 /** Timed window per sample, per mode. Short runs (`multi` sizes) fill it finely. */
 export const WINDOW_MS: Record<RunMode, number> = { quick: 150, full: 300 };
-/** Spin before each measurement, so the measuring threads sit on fast cores. */
+/** Spin before the one-worker baseline, so its thread sits on a fast core at full clock. */
 export const MEASURE_SPIN_MS = 250;
 /** The one-worker baseline converges fast once on a fast core; cap its extra sampling. */
 export const BASELINE_MAX_MS = 1_000;
+/** Baseline window: one worker's samples are noisier, so it gets at least this long. */
+export const BASELINE_WINDOW_MS = 300;
+/**
+ * If any single worker in the all-cores run is faster than the one-worker
+ * baseline by more than this fraction, the baseline did not run at full speed
+ * (contention can only slow a core down), so the row is flagged.
+ */
+export const WEAK_BASELINE_MARGIN = 0.05;
 /** Highest worker count accepted, as a multiple of the reported logical cores. */
 export const MAX_WORKERS_PER_CORE = 2;
 
@@ -40,6 +48,8 @@ export interface GroupResult {
   samples: number;
   /** In `def.unit`, all workers in the group combined. */
   throughput: number | undefined;
+  /** Fastest single worker's median rate, in `def.unit`. */
+  bestWorker: number | undefined;
 }
 
 export interface MultiOutcome {
@@ -53,7 +63,10 @@ export interface MultiOutcome {
   scaling?: number;
   checksumOk: boolean;
   hidden: boolean;
+  /** True when either spread is above NOISY_SPREAD, or the baseline is weak. */
   noisy: boolean;
+  /** A worker in the all-cores run beat the one-worker baseline (see WEAK_BASELINE_MARGIN). */
+  weakBaseline: boolean;
   valid: boolean;
   error?: string;
 }
@@ -191,7 +204,7 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
     id: number,
     def: KernelDef,
     size: number,
-    maxMs: number,
+    window: { windowMs: number; spinMs: number; maxMs: number },
   ): Promise<{ result: GroupResult; consistent: boolean }> {
     const count = group.length;
     const control = new Int32Array(new SharedArrayBuffer(CTRL.LENGTH * 4));
@@ -200,10 +213,8 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
       type: 'measure',
       id,
       group: { control, times, index, count },
-      windowMs,
-      spinMs: measureSpinMs,
       ...plan,
-      maxMs,
+      ...window,
     }));
     const consistent = replies.every((r) => r.checksumConsistent);
 
@@ -213,13 +224,30 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
     for (let s = 0; s < n; s++) perRep[s] = groupMsPerRep(times, s, count);
     const stats = summarize(fastest(perRep, plan.minSamples));
     const seconds = stats.median / 1000;
+
+    // Each worker's own median ms per rep; keep the fastest worker.
+    let bestMsPerRep = Infinity;
+    const mine = new Float64Array(n);
+    for (let w = 0; w < count; w++) {
+      for (let s = 0; s < n; s++) {
+        const k = (s * count + w) * SLOT;
+        const reps = times[k + 2]!;
+        mine[s] = reps > 0 ? (times[k + 1]! - times[k]!) / reps : Infinity;
+      }
+      bestMsPerRep = Math.min(bestMsPerRep, summarize(mine).median);
+    }
+    const work = def.work(size);
     return {
       consistent,
       result: {
         workers: count,
         stats,
         samples: n,
-        throughput: seconds > 0 ? def.work(size) / seconds : undefined,
+        throughput: seconds > 0 ? work / seconds : undefined,
+        bestWorker:
+          bestMsPerRep > 0 && Number.isFinite(bestMsPerRep)
+            ? work / (bestMsPerRep / 1000)
+            : undefined,
       },
     };
   }
@@ -246,9 +274,14 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
 
     const lossesBefore = visibility.losses();
     const hiddenAtStart = visibility.hiddenNow();
-    const single = await measure([p[0]!], i, def, size, Math.min(plan.maxMs, BASELINE_MAX_MS));
+    const single = await measure([p[0]!], i, def, size, {
+      windowMs: windowMs > 0 ? Math.max(windowMs, BASELINE_WINDOW_MS) : 0,
+      spinMs: measureSpinMs,
+      maxMs: Math.min(plan.maxMs, BASELINE_MAX_MS),
+    });
     checkCancel();
-    const all = await measure(p, i, def, size, plan.maxMs);
+    // No spin here: the workers are already busy and on cores after prepare.
+    const all = await measure(p, i, def, size, { windowMs, spinMs: 0, maxMs: plan.maxMs });
     const hidden = hiddenAtStart || visibility.hiddenNow() || visibility.losses() !== lossesBefore;
 
     const checksumOk = checksumMatches && single.consistent && all.consistent;
@@ -257,6 +290,14 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
       all.result.throughput !== undefined && single.result.throughput
         ? all.result.throughput / single.result.throughput
         : undefined;
+    const best = all.result.bestWorker;
+    const base = single.result.throughput;
+    const weakBaseline =
+      count > 1 &&
+      best !== undefined &&
+      base !== undefined &&
+      opts.size !== 'smoke' &&
+      best > base * (1 + WEAK_BASELINE_MARGIN);
     const error = !checksumOk
       ? 'checksum mismatch: result invalid'
       : hidden
@@ -270,7 +311,11 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
       ...(scaling !== undefined ? { scaling } : {}),
       checksumOk,
       hidden,
-      noisy: all.result.stats.spread > NOISY_SPREAD || single.result.stats.spread > NOISY_SPREAD,
+      noisy:
+        weakBaseline ||
+        all.result.stats.spread > NOISY_SPREAD ||
+        single.result.stats.spread > NOISY_SPREAD,
+      weakBaseline,
       valid,
       ...(error ? { error } : {}),
     };
@@ -301,6 +346,7 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
             checksumOk: false,
             hidden: false,
             noisy: false,
+            weakBaseline: false,
             valid: false,
             error: err instanceof Error ? err.message : String(err),
           };

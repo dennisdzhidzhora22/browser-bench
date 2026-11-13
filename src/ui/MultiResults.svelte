@@ -60,8 +60,13 @@
           data-ok={o.checksumOk}
           data-valid={o.valid}
           data-noisy={o.noisy}
+          data-weak-baseline={o.weakBaseline}
           title={o.error ??
-            (o.noisy ? `fastest samples differ by more than ${NOISY_SPREAD * 100} %` : '')}
+            (o.weakBaseline
+              ? 'one worker in the all-cores run beat the 1-core run, so the 1-core number (and scaling) is too low'
+              : o.noisy
+                ? `fastest samples differ by more than ${NOISY_SPREAD * 100} %`
+                : '')}
         >
           {status(o)}
         </td>

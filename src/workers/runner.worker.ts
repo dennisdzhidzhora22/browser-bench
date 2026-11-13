@@ -40,10 +40,9 @@ function prepareGroup(m: KernelModule, req: PrepareRequest): void {
   prepared = undefined;
   const fns = m.kernel(req.kernel);
   prepareStatus(fns.prepare(req.seed, req.size));
-  // First call tiers the code up; the second's time is reported for information.
-  const checksum = fns.run() >>> 0;
+  // Warm-up call: tiers the code up and gives the checksum. Its time is info only.
   const t0 = performance.now();
-  fns.run();
+  const checksum = fns.run() >>> 0;
   const runMs = performance.now() - t0;
   prepared = { fns, checksum };
   reply({ type: 'prepared', id: req.id, checksum, runMs });
@@ -94,7 +93,8 @@ function measureLoop(m: KernelModule, req: MeasureRequest): void {
 
   // Start barrier: the last worker to arrive releases everyone.
   if (Atomics.add(control, CTRL.READY, 1) + 1 === count) {
-    Atomics.store(control, CTRL.GEN, 1);
+    // compareExchange: never overwrite an ERROR_GEN a failed peer already set.
+    Atomics.compareExchange(control, CTRL.GEN, 0, 1);
     Atomics.notify(control, CTRL.GEN);
   }
 
@@ -110,6 +110,19 @@ function measureLoop(m: KernelModule, req: MeasureRequest): void {
       reps++;
       t1 = now();
     } while (t1 - t0 < windowMs);
+    if (count > 1) {
+      // Keep working until every worker has passed the window (busy tail).
+      Atomics.add(control, CTRL.PASSED, 1);
+      while (Atomics.load(control, CTRL.PASSED) < count) {
+        if (Atomics.load(control, CTRL.GEN) >= ERROR_GEN) throw new Error('another worker failed');
+        if (t1 - t0 > windowMs + BARRIER_TIMEOUT_MS) {
+          throw new Error('barrier timed out: another worker stopped responding');
+        }
+        if (run() >>> 0 !== expected) consistent = false;
+        reps++;
+        t1 = now();
+      }
+    }
     // Outside the timed region from here on.
     const slot = (s * count + index) * SLOT;
     times[slot] = t0;
@@ -118,7 +131,9 @@ function measureLoop(m: KernelModule, req: MeasureRequest): void {
 
     if (Atomics.add(control, CTRL.ARRIVED, 1) + 1 === count) {
       // Last to finish this sample: coordinate.
+      // Every peer has left its busy tail (it arrived), so PASSED can be reset.
       Atomics.store(control, CTRL.ARRIVED, 0);
+      Atomics.store(control, CTRL.PASSED, 0);
       perRep[s] = groupMsPerRep(times, s, count);
       const n = s + 1;
       Atomics.store(control, CTRL.SAMPLES, n);

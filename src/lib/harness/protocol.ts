@@ -52,10 +52,12 @@ export interface RunRequest {
 // `group.times` (Float64Array of [sample][worker][t0, t1, reps], t in absolute ms):
 //   - Each worker spins `spinMs`, then adds 1 to READY; the last one bumps GEN
 //     to 1 and wakes all.
-//   - Sample s starts when GEN > s. Each worker reads t0, calls run() until
-//     `windowMs` has passed (at least once), reads t1, stores t0, t1 and its
-//     rep count, then adds 1 to ARRIVED.
-//   - The last to arrive resets ARRIVED, records the sample count, decides
+//   - Sample s starts when GEN > s. Each worker reads t0 and calls run() until
+//     `windowMs` has passed (at least once); it then adds 1 to PASSED once and
+//     KEEPS calling run() until every worker has passed. So no worker runs
+//     alone at the end of a window, with less contention than the others.
+//     Then it reads t1, stores t0, t1 and its rep count, and adds 1 to ARRIVED.
+//   - The last to arrive resets ARRIVED and PASSED, records the sample count, decides
 //     whether to stop (same adaptive rule as single-core, applied to
 //     `groupMsPerRep`), then bumps GEN and wakes all.
 //   - A worker that fails sets STOP, bumps GEN by ERROR_GEN and wakes all, so
@@ -67,7 +69,15 @@ export interface RunRequest {
 // others back. groupMsPerRep = 1 / rate; throughput = work(size) / seconds.
 
 /** Indexes into the Int32 control array. */
-export const CTRL = { GEN: 0, ARRIVED: 1, STOP: 2, READY: 3, SAMPLES: 4, LENGTH: 8 } as const;
+export const CTRL = {
+  GEN: 0,
+  ARRIVED: 1,
+  STOP: 2,
+  READY: 3,
+  SAMPLES: 4,
+  PASSED: 5,
+  LENGTH: 8,
+} as const;
 /** Entries per worker per sample in `times`: t0, t1, reps. */
 export const SLOT = 3;
 /** Added to GEN by a failing worker: larger than any sample count. */
@@ -98,7 +108,7 @@ export interface Prepared {
   type: 'prepared';
   id: number;
   checksum: number;
-  /** Time of one `run` after warm-up, used to size the timed window. */
+  /** Time of the first (warm-up) `run` call, for information only. */
   runMs: number;
 }
 
