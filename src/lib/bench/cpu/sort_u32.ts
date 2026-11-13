@@ -11,5 +11,7 @@ export const sortU32: KernelDef = {
   // 250 ms floor for faster desktops.
   sizes: { smoke: 1_000, standard: 8_000_000 },
   expected: { smoke: 2_766_581_911, standard: 329_145_997 },
+  // All-cores test: smaller size so one instance per core fits in memory.
+  multi: { size: 1_000_000, expected: 3_432_757_072 },
   work: (size) => size / 1e6,
 };

@@ -6,9 +6,10 @@
     Cancelled,
     startRun,
     type KernelOutcome,
-    type Run,
     type RunMode,
   } from '../lib/harness/orchestrator.ts';
+  import { startMultiRun, type MultiOutcome } from '../lib/harness/multi.ts';
+  import MultiResults from './MultiResults.svelte';
   import Results from './Results.svelte';
 
   const isolated = globalThis.crossOriginIsolated === true;
@@ -24,6 +25,8 @@
     storage: false,
   });
   let mode: RunMode = $state('quick');
+  const cores = Math.max(1, navigator.hardwareConcurrency || 1);
+  let workers: number = $state(cores);
 
   type Phase =
     | { kind: 'idle' }
@@ -34,11 +37,12 @@
 
   let phase: Phase = $state({ kind: 'idle' });
   let outcomes: KernelOutcome[] = $state([]);
-  let active: Run | undefined;
+  let multiOutcomes: MultiOutcome[] = $state([]);
+  let active: { cancel(): void } | undefined;
+  let cancelRequested = false;
 
-  const kernelsToRun = $derived(
-    components.filter((c) => selected[c.id] && c.kernels.length > 0).flatMap((c) => c.kernels),
-  );
+  const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
+  const totalKernels = $derived(toRun.reduce((n, c) => n + c.kernels.length, 0));
 
   /** Lets Svelte flush and the browser paint before the next kernel starts. */
   async function settle(): Promise<void> {
@@ -60,24 +64,46 @@
   }
 
   async function run() {
-    const list: readonly KernelDef[] = kernelsToRun;
-    if (list.length === 0) return;
+    const plan = toRun;
+    const total = totalKernels;
+    if (total === 0) return;
     outcomes = [];
-    phase = { kind: 'running', index: 0, total: list.length, current: list[0]!.name };
-    active = startRun({
-      kernels: list,
-      size,
-      mode,
-      beforeKernel: async (index, def) => {
-        phase = { kind: 'running', index, total: list.length, current: def.name };
-        await settle();
-      },
-      afterKernel: (_i, outcome) => {
-        outcomes.push(outcome);
-      },
-    });
+    multiOutcomes = [];
+    cancelRequested = false;
+    phase = { kind: 'running', index: 0, total, current: 'starting' };
+    let offset = 0;
     try {
-      await active.done;
+      for (const c of plan) {
+        if (cancelRequested) throw new Cancelled();
+        const base = offset;
+        const beforeKernel = async (index: number, def: KernelDef) => {
+          phase = { kind: 'running', index: base + index, total, current: `${c.name}: ${def.name}` };
+          await settle();
+        };
+        if (c.id === 'cpu-multi') {
+          const r = startMultiRun({
+            kernels: c.kernels,
+            size,
+            mode,
+            workers,
+            beforeKernel,
+            afterKernel: (_i, o) => void multiOutcomes.push(o),
+          });
+          active = r;
+          await r.done;
+        } else {
+          const r = startRun({
+            kernels: c.kernels,
+            size,
+            mode,
+            beforeKernel,
+            afterKernel: (_i, o) => void outcomes.push(o),
+          });
+          active = r;
+          await r.done;
+        }
+        offset += c.kernels.length;
+      }
       phase = { kind: 'done' };
     } catch (err) {
       phase =
@@ -90,6 +116,7 @@
   }
 
   function cancel() {
+    cancelRequested = true;
     active?.cancel();
   }
 </script>
@@ -125,6 +152,19 @@
         {c.name}
         {#if c.kernels.length === 0}<span class="muted">(not built yet)</span>{/if}
       </label>
+      {#if c.id === 'cpu-multi' && selected['cpu-multi']}
+        <label class="sub">
+          Workers
+          <input
+            type="number"
+            min="1"
+            max={cores * 2}
+            bind:value={workers}
+            data-testid="workers"
+          />
+          <span class="muted">(this browser reports {cores} logical cores)</span>
+        </label>
+      {/if}
     {/each}
   </fieldset>
 
@@ -141,7 +181,9 @@
         {phase.index + 1} / {phase.total} · {phase.current}
       </span>
     {:else}
-      <button onclick={run} disabled={kernelsToRun.length === 0} data-testid="run">Run</button>
+      <button onclick={run} disabled={totalKernels === 0 || !(workers >= 1)} data-testid="run"
+        >Run</button
+      >
       {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
       {#if phase.kind === 'cancelled'}<span data-testid="status">Cancelled</span>{/if}
     {/if}
@@ -152,7 +194,13 @@
   {/if}
 
   {#if outcomes.length > 0}
+    <h2>CPU — single core</h2>
     <Results {outcomes} />
+  {/if}
+
+  {#if multiOutcomes.length > 0}
+    <h2>CPU — all cores</h2>
+    <MultiResults outcomes={multiOutcomes} />
   {/if}
 
   <p class="muted note">
@@ -179,6 +227,16 @@
   }
   label {
     display: block;
+  }
+  .sub {
+    margin-left: 1.6rem;
+  }
+  .sub input {
+    width: 4rem;
+  }
+  h2 {
+    font-size: 1.1rem;
+    margin: 1.25rem 0 0.5rem;
   }
   .off,
   .muted {

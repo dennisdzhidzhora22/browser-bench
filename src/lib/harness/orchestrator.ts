@@ -71,8 +71,8 @@ export class Cancelled extends Error {
   }
 }
 
-export interface Run {
-  done: Promise<KernelOutcome[]>;
+export interface Run<T = KernelOutcome> {
+  done: Promise<T[]>;
   cancel(): void;
 }
 
@@ -83,7 +83,7 @@ export function createWorker(): Worker {
 }
 
 /** Counts visibility losses, so a kernel can tell whether the tab was hidden while it ran. */
-function watchVisibility(): { hiddenNow(): boolean; losses(): number; stop(): void } {
+export function watchVisibility(): { hiddenNow(): boolean; losses(): number; stop(): void } {
   const doc = (globalThis as { document?: Document }).document;
   if (!doc) return { hiddenNow: () => false, losses: () => 0, stop: () => {} };
   let losses = 0;

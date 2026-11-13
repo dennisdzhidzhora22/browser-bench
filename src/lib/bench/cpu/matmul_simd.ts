@@ -11,6 +11,8 @@ export const matmulSimd: KernelDef = {
   seed: 1,
   sizes: { smoke: 32, standard: 1440 },
   expected: { smoke: 419_049_538, standard: 1_847_568_248 },
+  // All-cores test: smaller size so one instance per core fits in memory.
+  multi: { size: 512, expected: 490_095_203 },
   work: (n) => (2 * n * n * n) / 1e9,
   simd: true,
 };

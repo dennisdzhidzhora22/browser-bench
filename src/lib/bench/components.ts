@@ -11,7 +11,7 @@ export interface ComponentDef {
 
 export const components: readonly ComponentDef[] = [
   { id: 'cpu-single', name: 'CPU — single core', kernels: cpuKernels },
-  { id: 'cpu-multi', name: 'CPU — all cores', kernels: [] },
+  { id: 'cpu-multi', name: 'CPU — all cores', kernels: cpuKernels },
   { id: 'memory', name: 'Memory', kernels: [] },
   { id: 'gpu', name: 'GPU', kernels: [] },
   { id: 'storage', name: 'Storage', kernels: [] },

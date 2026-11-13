@@ -40,7 +40,74 @@ export interface RunRequest {
   maxMs: number;
 }
 
-export type ToWorker = InitRequest | RunRequest;
+// ── All-cores test (docs/SPEC.md, 3.2) ─────────────────────────────────────
+//
+//   page                         every worker
+//   prepare {id, ...}    ───▶    prepare + warm-up (untimed)
+//                        ◀───    prepared {runMs, checksum}
+//   measure {id, group}  ───▶    barrier loop below
+//                        ◀───    measured {checksumConsistent}
+//
+// Barrier loop, shared through `group.control` (Int32Array) and
+// `group.times` (Float64Array of [sample][worker][t0, t1], absolute ms):
+//   - Each worker adds 1 to READY; the last one bumps GEN to 1 and wakes all.
+//   - Sample s starts when GEN > s. Each worker reads t0, calls run() `reps`
+//     times, reads t1, stores both, then adds 1 to ARRIVED.
+//   - The last to arrive resets ARRIVED, records the sample count, decides
+//     whether to stop (same adaptive rule as single-core, applied to the
+//     sample's wall time = max t1 - min t0), then bumps GEN and wakes all.
+// Nothing else happens between t0 and t1.
+
+/** Indexes into the Int32 control array. */
+export const CTRL = { GEN: 0, ARRIVED: 1, STOP: 2, READY: 3, SAMPLES: 4, LENGTH: 8 } as const;
+
+export interface PrepareRequest {
+  type: 'prepare';
+  id: number;
+  kernel: string;
+  seed: number;
+  size: number;
+}
+
+export interface Prepared {
+  type: 'prepared';
+  id: number;
+  checksum: number;
+  /** Time of one `run` after warm-up, used to size the timed window. */
+  runMs: number;
+}
+
+export interface MeasureGroup {
+  /** Int32Array over a SharedArrayBuffer, CTRL.LENGTH entries. */
+  control: Int32Array;
+  /** Float64Array over a SharedArrayBuffer, maxSamples * count * 2 entries. */
+  times: Float64Array;
+  /** This worker's index in the group. */
+  index: number;
+  /** Workers in the group. */
+  count: number;
+}
+
+export interface MeasureRequest {
+  type: 'measure';
+  id: number;
+  group: MeasureGroup;
+  /** `run` calls per worker per sample. */
+  reps: number;
+  minSamples: number;
+  maxSamples: number;
+  targetSpread: number;
+  maxMs: number;
+}
+
+export interface Measured {
+  type: 'measured';
+  id: number;
+  /** True when every timed call returned the prepared checksum. */
+  checksumConsistent: boolean;
+}
+
+export type ToWorker = InitRequest | RunRequest | PrepareRequest | MeasureRequest;
 
 export interface Ready {
   type: 'ready';
@@ -69,4 +136,4 @@ export interface WorkerError {
   message: string;
 }
 
-export type FromWorker = Ready | RunResult | WorkerError;
+export type FromWorker = Ready | RunResult | Prepared | Measured | WorkerError;

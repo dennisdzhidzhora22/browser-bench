@@ -75,7 +75,18 @@ for this project, not ports of another benchmark's workloads.
 
 Same kernels, `navigator.hardwareConcurrency` workers started together with a shared start
 signal (`Atomics.notify` on a `SharedArrayBuffer`). Reports summed throughput and the scaling
-ratio versus the single-core result. Worker count is user-adjustable.
+ratio. Worker count is user-adjustable.
+
+How it works (M2):
+
+- Kernels whose standard size needs a lot of memory have a smaller `multi` size, so one
+  instance per core stays under ~16 MB of wasm memory each.
+- `run` is repeated (`reps`) to fill a ~300 ms timed window per sample.
+- Every sample is released by a shared barrier. Its time is the **wall time** from the first
+  worker's start to the last worker's finish, so a slow core holds the whole sample back,
+  as it would a real parallel job.
+- The scaling ratio's baseline is one worker running the same size and window inside this
+  test, not the single-core component's result (which may use a different size).
 
 ### 3.3 Memory
 

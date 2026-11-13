@@ -26,4 +26,11 @@ export interface KernelDef {
   work(size: number): number;
   /** True for the simd128 variant of a kernel. */
   simd?: boolean;
+  /**
+   * Size for the all-cores test, when `standard` uses too much memory to run
+   * one instance per core (target: under ~16 MB of wasm memory per instance).
+   * Short runs are fine there: the all-cores harness repeats `run` to fill
+   * each timed window. Absent = use `standard`.
+   */
+  multi?: { size: number; expected: number };
 }
