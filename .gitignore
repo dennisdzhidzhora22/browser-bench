@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src/generated/
+kernels/target/
+test-results/
+playwright-report/
+.env
+.claude/settings.local.json
+.env.*

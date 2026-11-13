@@ -1,0 +1,7 @@
+# Read only when cargo runs with this directory as its working directory.
+# scripts/build-wasm.mjs does that.
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

@@ -1,0 +1,21 @@
+[package]
+name = "kernels"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Zero dependencies on purpose: no build scripts or proc-macros, so cargo never
+# compiles and runs a native helper binary (see docs/SPEC.md, D2 and R1).
+[dependencies]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
