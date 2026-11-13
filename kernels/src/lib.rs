@@ -25,7 +25,10 @@ pub mod arena;
 pub mod checksum;
 pub mod global;
 
+mod fft;
+mod matmul;
 mod mix;
+mod trace;
 
 /// Bumped whenever any kernel's work, sizes or checksum changes. JS checks this
 /// against `ABI_VERSION` in src/lib/harness/wasm.ts.
