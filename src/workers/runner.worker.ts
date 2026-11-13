@@ -58,9 +58,9 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
   const req = event.data;
   if (req.type === 'init') {
     try {
-      const m = (mod ??= await WebAssembly.compileStreaming(fetch(kernelsUrl)).then(
-        instantiateKernels,
-      ));
+      const m: KernelModule =
+        mod ?? (await WebAssembly.compileStreaming(fetch(kernelsUrl)).then(instantiateKernels));
+      mod = m;
       reply({ type: 'ready', abi: m.abi_version() });
     } catch (err) {
       reply({ type: 'error', message: errorText(err) });
