@@ -5,8 +5,8 @@
 //! Every kernel `<id>` exports exactly two functions:
 //!
 //! - `<id>_prepare(seed: u32, size: u32) -> u32` — untimed. Allocates buffers
-//!   from the arena and fills inputs. Returns 0 on success, nonzero on failure
-//!   (for example 1 = out of memory).
+//!   from the arena and fills inputs. Returns 0 on success, 1 = out of memory,
+//!   2 = invalid size.
 //! - `<id>_run() -> u32` — timed. Does the work on the prepared inputs and
 //!   returns a checksum. It must be idempotent: calling it N times after one
 //!   `prepare` returns the same checksum every time. If the work mutates its
@@ -25,18 +25,21 @@ pub mod arena;
 pub mod checksum;
 pub mod global;
 
+mod fft;
 mod lz;
 mod mandelbrot;
+mod matmul;
 mod mix;
 mod nbody;
 mod sha256;
 mod sort;
+mod trace;
 
-/// Bumped whenever any kernel's work, sizes or checksum changes. JS checks this
-/// against `ABI_VERSION` in src/lib/harness/wasm.ts.
+/// Bumped whenever a kernel is added or any kernel's work, sizes or checksum
+/// changes. JS checks this against `ABI_VERSION` in src/lib/harness/wasm.ts.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    2
+    3
 }
 
 #[panic_handler]

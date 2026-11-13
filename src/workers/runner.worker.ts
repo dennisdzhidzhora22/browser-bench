@@ -22,7 +22,8 @@ function run(m: KernelModule, req: RunRequest): void {
   const status = k.prepare(req.seed, req.size);
   const prepareMs = performance.now() - p0;
   if (status !== 0) {
-    const why = status === 1 ? 'out of memory' : `status ${status}`;
+    const why =
+      status === 1 ? 'out of memory' : status === 2 ? 'invalid size' : `status ${status}`;
     throw new Error(`prepare failed (${why})`);
   }
 
