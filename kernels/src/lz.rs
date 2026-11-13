@@ -36,14 +36,24 @@
 //!   flush literals [lit, n)
 //!   flush [a, b): while a < b: k = min(128, b - a); emit k - 1, input[a..a+k]; a += k
 //!
-//! run(): compress input -> comp (length clen), decompress comp -> out.
+//! run(): PASSES = 2 identical passes over the same input.
+//!   total = 0x811C9DC5
+//!   repeat PASSES times:
+//!     c = pass()
+//!     total = fold(total, c)
+//!   return total
+//!
+//! pass(): compress input -> comp (length clen), decompress comp -> out.
 //!   acc = fold(0x811C9DC5, clen)         (fold(acc, v) = (acc ^ v) * 0x01000193)
 //!   if out != input (length or any byte): return fold(acc, 0xDEADBEEF)
 //!   for j = 0, 1024, 2048, ... < clen: acc = fold(acc, comp[j])
 //!   return acc
+//!   (Every pass returns the same c, so run() = fold(fold(START, c), c).)
 //!
-//! Work: `size` input bytes go through the compressor once and come out of the
-//! decompressor once (plus one compare). Worst case clen <= n + n/128 + 1.
+//! Work: per pass, `size` input bytes go through the compressor once and come
+//! out of the decompressor once (plus one compare); one run = PASSES passes.
+//! Worst case clen <= n + n/128 + 1. Arena: input + comp + out ~ 3 x size,
+//! plus a 256 KiB hash table.
 
 use crate::arena;
 use crate::checksum::{Rng, START, fold};
@@ -54,6 +64,8 @@ const MAX_OFF: usize = 65_535;
 const MIN_MATCH: usize = 4;
 const MAX_MATCH: usize = 131;
 const MAX_LIT: usize = 128;
+/// Compress + decompress passes per `run` call.
+const PASSES: u32 = 2;
 
 struct State {
     input: &'static mut [u8],
@@ -202,10 +214,8 @@ fn decompress(comp: &[u8], out: &mut [u8]) -> Option<usize> {
     Some(d)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn lz_run() -> u32 {
-    // SAFETY: as above.
-    let s = unsafe { STATE.get() };
+/// One compress + decompress + verify pass; see the header for the checksum.
+fn pass(s: &mut State) -> u32 {
     let clen = compress(s.input, s.comp, s.table);
     let comp = &s.comp[..clen];
     let acc = fold(START, clen as u32);
@@ -217,4 +227,11 @@ pub extern "C" fn lz_run() -> u32 {
     comp.iter()
         .step_by(1024)
         .fold(acc, |a, &b| fold(a, b as u32))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lz_run() -> u32 {
+    // SAFETY: as above.
+    let s = unsafe { STATE.get() };
+    (0..PASSES).fold(START, |total, _| fold(total, pass(s)))
 }
