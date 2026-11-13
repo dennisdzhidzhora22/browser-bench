@@ -268,6 +268,7 @@ function wellBehaved(
 ): (msg: ToWorker) => FromWorker {
   return (msg) => {
     if (msg.type === 'init') return { type: 'ready', abi: 4 };
+    if (msg.type !== 'run') throw new Error(`wellBehaved: unexpected ${msg.type} request`);
     const def = defs.find((d) => d.id === msg.kernel)!;
     return result({
       id: msg.id,
@@ -392,6 +393,7 @@ describe('startRun', () => {
   it('computes outcomes from the fastest samples of the reply', async () => {
     const w = new FakeWorker((msg) => {
       if (msg.type === 'init') return { type: 'ready', abi: 4 };
+      if (msg.type !== 'run') throw new Error(`unexpected ${msg.type} request`);
       return result({
         id: msg.id,
         kernel: msg.kernel,

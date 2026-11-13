@@ -230,3 +230,43 @@ describe.skipIf(process.env['BENCH_STANDARD'] !== '1')('CPU kernels at standard 
     expect(k.run() >>> 0).toBe(first);
   });
 });
+
+// ── All-cores sizes (docs/SPEC.md, 3.2): one instance per core, so memory matters ──
+
+const withMulti = cpuKernels.filter((d) => d.multi !== undefined);
+
+describe('CPU kernels at their all-cores (`multi`) size', () => {
+  it('at least one kernel defines a multi size', () => {
+    expect(withMulti.length).toBeGreaterThan(0);
+  });
+
+  it.each(withMulti.map((k) => [k.id, k] as const))('%s', (_id, def) => {
+    const multi = def.multi!;
+    expect(Number.isInteger(multi.size) && multi.size > 0, 'size').toBe(true);
+    expect(multi.size, 'multi is a reduction, not an increase').toBeLessThanOrEqual(def.sizes.standard);
+    expect(Number.isInteger(multi.expected) && multi.expected >= 0 && multi.expected <= 0xffffffff).toBe(true);
+
+    // Fresh instance: linear memory never shrinks.
+    return loadKernels().then((m) => {
+      const k = m.kernel(def.id);
+      expect(k.prepare(def.seed, multi.size)).toBe(0);
+      const first = k.run() >>> 0;
+      expect(k.run() >>> 0).toBe(first);
+      expect(k.run() >>> 0).toBe(first);
+      expect(first).toBe(multi.expected);
+    });
+  });
+});
+
+describe('peak wasm memory per instance', () => {
+  const LIMIT = 20 * 1024 * 1024;
+
+  it.each(cpuKernels.map((k) => [k.id, k] as const))('%s stays under 20 MB at its all-cores size', async (_id, def) => {
+    const { size } = def.multi ?? { size: def.sizes.standard };
+    const m = await loadKernels(); // fresh instance
+    const k = m.kernel(def.id);
+    expect(k.prepare(def.seed, size)).toBe(0);
+    k.run();
+    expect(m.memory.buffer.byteLength, `${def.id} size=${size}`).toBeLessThan(LIMIT);
+  });
+});

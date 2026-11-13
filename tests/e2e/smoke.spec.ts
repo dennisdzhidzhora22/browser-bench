@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 // Ids of the CPU single-core kernels, in run order (src/lib/bench/cpu/index.ts).
 const CPU_KERNELS = [
@@ -44,12 +44,13 @@ test.describe('M1 smoke', () => {
     await expect(page.getByTestId('isolated')).not.toContainText('smoke sizes');
   });
 
-  test('CPU single-core is selected by default and the other components are disabled', async ({ page }) => {
+  test('CPU single-core is selected by default; unbuilt components are disabled', async ({ page }) => {
     await page.goto('/?smoke');
     const cpu = page.getByTestId('component-cpu-single');
     await expect(cpu).toBeChecked();
     await expect(cpu).toBeEnabled();
-    for (const id of ['cpu-multi', 'memory', 'gpu', 'storage']) {
+    // cpu-multi became selectable in M2 (see 'M2 all cores' below).
+    for (const id of ['memory', 'gpu', 'storage']) {
       const box = page.getByTestId(`component-${id}`);
       await expect(box, id).toBeDisabled();
       await expect(box, id).not.toBeChecked();
@@ -196,6 +197,213 @@ test.describe('M1 smoke', () => {
     expect(urls.length).toBeGreaterThan(0);
     const external = urls.filter((u) => {
       // data: and blob: URLs never leave the browser (e.g. worker bootstrap).
+      if (u.startsWith('data:') || u.startsWith('blob:')) return false;
+      return new URL(u).origin !== origin;
+    });
+    expect(external).toEqual([]);
+  });
+});
+
+// ── M2: CPU all cores ─────────────────────────────────────────────────────────
+
+test.describe('M2 all cores', () => {
+  const DASH = '—';
+
+  async function onlyMulti(page: Page) {
+    await page.getByTestId('component-cpu-multi').check();
+    await page.getByTestId('component-cpu-single').uncheck();
+  }
+
+  test('cpu-multi is enabled and unchecked by default', async ({ page }) => {
+    await page.goto('/?smoke');
+    const multi = page.getByTestId('component-cpu-multi');
+    await expect(multi).toBeEnabled();
+    await expect(multi).not.toBeChecked();
+  });
+
+  test('the worker count input shows only while cpu-multi is checked', async ({ page }) => {
+    await page.goto('/?smoke');
+    const workers = page.getByTestId('workers');
+    await expect(workers).toHaveCount(0);
+    await page.getByTestId('component-cpu-multi').check();
+    await expect(workers).toBeVisible();
+    await expect(workers).toBeEnabled();
+    const n = Number(await workers.inputValue());
+    expect(Number.isInteger(n) && n >= 1).toBe(true);
+    await page.getByTestId('component-cpu-multi').uncheck();
+    await expect(workers).toHaveCount(0);
+  });
+
+  test('an empty or zero worker count disables Run', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMulti(page);
+    const workers = page.getByTestId('workers');
+    await workers.fill('0');
+    await expect(page.getByTestId('run')).toBeDisabled();
+    await workers.fill('');
+    await expect(page.getByTestId('run')).toBeDisabled();
+    await workers.fill('2');
+    await expect(page.getByTestId('run')).toBeEnabled();
+  });
+
+  test('smoke run of cpu-multi with 2 workers: 11 valid rows and no single-core table', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    await expect(page.getByTestId('error')).toHaveCount(0);
+    await expect(page.getByTestId('cancel')).toHaveCount(0);
+    await expect(page.getByTestId('run')).toBeEnabled();
+
+    await expect(page.getByTestId('multi-results')).toBeVisible();
+    await expect(page.getByTestId('results')).toHaveCount(0);
+    for (const id of CPU_KERNELS) {
+      await expect(page.getByTestId(`multi-row-${id}`), id).toHaveCount(1);
+    }
+    const rowIds = await page
+      .locator('[data-testid^="multi-row-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+    expect(rowIds).toEqual(CPU_KERNELS.map((id) => `multi-row-${id}`));
+
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(CPU_KERNELS.length);
+    for (const cell of await checks.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true');
+      await expect(cell).toHaveAttribute('data-valid', 'true');
+      await expect(cell).toHaveText(/^(ok|noisy)$/);
+    }
+
+    // Structure only: a number, or a dash when a smoke window is below timer resolution.
+    const values = page.getByTestId('value');
+    await expect(values).toHaveCount(CPU_KERNELS.length);
+    for (const v of await values.all()) {
+      await expect(v).toHaveText(new RegExp(`^(\\d+(\\.\\d+)?|${DASH})$`));
+    }
+    const scalings = page.getByTestId('scaling');
+    await expect(scalings).toHaveCount(CPU_KERNELS.length);
+    for (const s of await scalings.all()) {
+      await expect(s).toHaveText(new RegExp(`^(\\d+\\.\\d{2}×|${DASH})$`));
+    }
+
+    // Each row names the worker count it used.
+    for (const id of CPU_KERNELS) {
+      await expect(page.getByTestId(`multi-row-${id}`)).toContainText('2 workers');
+    }
+  });
+
+  test('both components selected: both tables appear', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('component-cpu-multi').check();
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 180_000 });
+    await expect(page.getByTestId('error')).toHaveCount(0);
+    await expect(page.getByTestId('results')).toBeVisible();
+    await expect(page.getByTestId('multi-results')).toBeVisible();
+    await expect(page.locator('[data-testid^="row-"]')).toHaveCount(CPU_KERNELS.length);
+    await expect(page.locator('[data-testid^="multi-row-"]')).toHaveCount(CPU_KERNELS.length);
+    // 11 single-core + 11 all-cores checksum cells, all valid.
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(CPU_KERNELS.length * 2);
+    for (const cell of await checks.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true');
+      await expect(cell).toHaveAttribute('data-valid', 'true');
+    }
+  });
+
+  test('a single worker is allowed', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('1');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(CPU_KERNELS.length);
+    for (const cell of await checks.all()) await expect(cell).toHaveAttribute('data-valid', 'true');
+  });
+
+  test('a second all-cores run replaces the results instead of appending', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    for (let i = 0; i < 2; i++) {
+      await page.getByTestId('run').click();
+      await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    }
+    await expect(page.getByTestId('checksum')).toHaveCount(CPU_KERNELS.length);
+  });
+
+  test('a hidden tab marks every all-cores row hidden and invalid', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    });
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(CPU_KERNELS.length);
+    for (const cell of await checks.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true');
+      await expect(cell).toHaveAttribute('data-valid', 'false');
+      await expect(cell).toHaveText('hidden');
+    }
+    for (const v of await page.getByTestId('value').all()) await expect(v).toHaveText(DASH);
+  });
+
+  test('cancel during an all-cores run at standard size', async ({ page }) => {
+    await page.goto('/');
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    const cancel = page.getByTestId('cancel');
+    await expect(cancel).toBeVisible();
+    await expect(page.getByTestId('progress')).toContainText(`1 / ${CPU_KERNELS.length}`);
+    await expect(page.getByTestId('run')).toHaveCount(0);
+    // Let the workers get past init and into a kernel before cancelling.
+    await page.waitForTimeout(1_500);
+    await expect(cancel).toBeVisible();
+
+    await cancel.click();
+
+    await expect(page.getByTestId('status')).toHaveText('Cancelled');
+    await expect(page.getByTestId('error')).toHaveCount(0);
+    await expect(page.getByTestId('cancel')).toHaveCount(0);
+    await expect(page.getByTestId('run')).toBeEnabled();
+    await expect(page.getByTestId('checksum')).not.toHaveCount(CPU_KERNELS.length);
+    // The controls are usable again.
+    await expect(page.getByTestId('workers')).toBeEnabled();
+    await expect(page.getByTestId('component-cpu-multi')).toBeEnabled();
+  });
+
+  test('can run again after cancelling an all-cores run', async ({ page }) => {
+    await page.goto('/');
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    await page.getByTestId('cancel').click();
+    await expect(page.getByTestId('status')).toHaveText('Cancelled');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('cancel')).toBeVisible();
+    await page.getByTestId('cancel').click();
+    await expect(page.getByTestId('status')).toHaveText('Cancelled');
+    await expect(page.getByTestId('run')).toBeEnabled();
+  });
+
+  test('every network request is same-origin during an all-cores run', async ({ page, baseURL }) => {
+    const origin = new URL(baseURL!).origin;
+    const urls: string[] = [];
+    page.on('request', (req) => urls.push(req.url()));
+    await page.goto('/?smoke');
+    await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    const external = urls.filter((u) => {
       if (u.startsWith('data:') || u.startsWith('blob:')) return false;
       return new URL(u).origin !== origin;
     });
