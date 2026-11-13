@@ -9,5 +9,7 @@ export const fft: KernelDef = {
   seed: 1,
   sizes: { smoke: 4, standard: 10_000 },
   expected: { smoke: 3_877_711_093, standard: 2_569_804_454 },
+  // All-cores test: short runs (~30 ms) so fixed-time windows are fine-grained.
+  multi: { size: 800, expected: 3_257_962_583 },
   work: (size) => size,
 };

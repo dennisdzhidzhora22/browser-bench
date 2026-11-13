@@ -9,6 +9,8 @@ export const mandelbrotSimd: KernelDef = {
   seed: 1,
   sizes: { smoke: 64, standard: 3_000 },
   expected: { smoke: 2_310_917_514, standard: 2_773_226_483 },
+  // All-cores test: short runs (~30 ms) so fixed-time windows are fine-grained.
+  multi: { size: 800, expected: 357_525_391 },
   work: (size) => (size * Math.floor((size * 3) / 4)) / 1e6,
   simd: true,
 };

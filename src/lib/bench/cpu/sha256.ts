@@ -15,7 +15,7 @@ export const sha256: KernelDef = {
   sizes: { smoke: 4_096, standard: 16_000_000 },
   expected: { smoke: 222_303_941, standard: 4_203_668_933 },
   // All-cores test: smaller size so one instance per core fits in memory.
-  multi: { size: 4_000_000, expected: 2_252_993_605 },
+  multi: { size: 1_000_000, expected: 1_572_256_949 },
   // MB hashed per run = size x passes / 1e6.
   work: (size) => (size * SHA256_PASSES) / 1e6,
 };

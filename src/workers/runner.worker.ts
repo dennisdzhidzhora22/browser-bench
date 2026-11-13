@@ -3,7 +3,11 @@
 // the page, so page work never lands inside a measurement.
 
 import {
+  BARRIER_TIMEOUT_MS,
   CTRL,
+  ERROR_GEN,
+  groupMsPerRep,
+  SLOT,
   type FromWorker,
   type InitRequest,
   type MeasureRequest,
@@ -36,7 +40,7 @@ function prepareGroup(m: KernelModule, req: PrepareRequest): void {
   prepared = undefined;
   const fns = m.kernel(req.kernel);
   prepareStatus(fns.prepare(req.seed, req.size));
-  // First call tiers the code up; the second gives a fair time for sizing windows.
+  // First call tiers the code up; the second's time is reported for information.
   const checksum = fns.run() >>> 0;
   const t0 = performance.now();
   fns.run();
@@ -45,16 +49,48 @@ function prepareGroup(m: KernelModule, req: PrepareRequest): void {
   reply({ type: 'prepared', id: req.id, checksum, runMs });
 }
 
-function measureGroup(req: MeasureRequest): void {
+/** Waits until GEN > s. Throws if a peer failed or nothing moves for BARRIER_TIMEOUT_MS. */
+function waitForSample(control: Int32Array, s: number): void {
+  let gen = Atomics.load(control, CTRL.GEN);
+  while (gen <= s) {
+    if (Atomics.wait(control, CTRL.GEN, gen, BARRIER_TIMEOUT_MS) === 'timed-out') {
+      throw new Error('barrier timed out: another worker stopped responding');
+    }
+    gen = Atomics.load(control, CTRL.GEN);
+  }
+  if (gen >= ERROR_GEN) throw new Error('another worker failed');
+}
+
+/** Wakes every peer and tells them to stop. Used when this worker fails. */
+function abortGroup(control: Int32Array): void {
+  Atomics.store(control, CTRL.STOP, 1);
+  Atomics.add(control, CTRL.GEN, ERROR_GEN);
+  Atomics.notify(control, CTRL.GEN);
+}
+
+function measureGroup(m: KernelModule, req: MeasureRequest): void {
+  const { control } = req.group;
+  try {
+    measureLoop(m, req);
+  } catch (err) {
+    abortGroup(control);
+    throw err;
+  }
+}
+
+function measureLoop(m: KernelModule, req: MeasureRequest): void {
   if (!prepared) throw new Error('measure before prepare');
   const { control, times, index, count } = req.group;
   const run = prepared.fns.run;
   const expected = prepared.checksum;
-  const reps = req.reps;
+  const windowMs = req.windowMs;
   let consistent = true;
   // Preallocated so the coordinator allocates nothing between samples.
-  const walls = new Float64Array(req.maxSamples);
+  const perRep = new Float64Array(req.maxSamples);
   const scratch = new Float64Array(req.maxSamples);
+
+  // `mix` keeps no arena buffers, so spinning on it leaves the prepared kernel intact.
+  spin(m, req.spinMs);
 
   // Start barrier: the last worker to arrive releases everyone.
   if (Atomics.add(control, CTRL.READY, 1) + 1 === count) {
@@ -63,43 +99,36 @@ function measureGroup(req: MeasureRequest): void {
   }
 
   for (let s = 0; s < req.maxSamples; s++) {
-    let gen = Atomics.load(control, CTRL.GEN);
-    while (gen <= s) {
-      Atomics.wait(control, CTRL.GEN, gen);
-      gen = Atomics.load(control, CTRL.GEN);
-    }
+    waitForSample(control, s);
     if (Atomics.load(control, CTRL.STOP) !== 0) break;
 
     const t0 = now();
-    for (let r = 0; r < reps; r++) {
+    let reps = 0;
+    let t1: number;
+    do {
       if (run() >>> 0 !== expected) consistent = false;
-    }
-    const t1 = now();
+      reps++;
+      t1 = now();
+    } while (t1 - t0 < windowMs);
     // Outside the timed region from here on.
-    const slot = (s * count + index) * 2;
+    const slot = (s * count + index) * SLOT;
     times[slot] = t0;
     times[slot + 1] = t1;
+    times[slot + 2] = reps;
 
     if (Atomics.add(control, CTRL.ARRIVED, 1) + 1 === count) {
       // Last to finish this sample: coordinate.
       Atomics.store(control, CTRL.ARRIVED, 0);
-      let start = Infinity;
-      let end = -Infinity;
-      for (let w = 0; w < count; w++) {
-        const k = (s * count + w) * 2;
-        start = Math.min(start, times[k]!);
-        end = Math.max(end, times[k + 1]!);
-      }
-      walls[s] = end - start;
+      perRep[s] = groupMsPerRep(times, s, count);
       const n = s + 1;
       Atomics.store(control, CTRL.SAMPLES, n);
       let firstStart = Infinity;
-      for (let w = 0; w < count; w++) firstStart = Math.min(firstStart, times[w * 2]!);
+      for (let w = 0; w < count; w++) firstStart = Math.min(firstStart, times[w * SLOT]!);
       const stop =
         n >= req.maxSamples ||
         (n >= req.minSamples &&
-          (fastestSpread(walls, n, req.minSamples, scratch) <= req.targetSpread ||
-            end - firstStart > req.maxMs));
+          (fastestSpread(perRep, n, req.minSamples, scratch) <= req.targetSpread ||
+            t1 - firstStart > req.maxMs));
       if (stop) Atomics.store(control, CTRL.STOP, 1);
       Atomics.add(control, CTRL.GEN, 1);
       Atomics.notify(control, CTRL.GEN);
@@ -183,10 +212,13 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
     return;
   }
   try {
-    if (!mod) throw new Error('worker not initialised');
+    if (!mod) {
+      if (req.type === 'measure') abortGroup(req.group.control);
+      throw new Error('worker not initialised');
+    }
     if (req.type === 'run') run(mod, req);
     else if (req.type === 'prepare') prepareGroup(mod, req);
-    else measureGroup(req);
+    else measureGroup(mod, req);
   } catch (err) {
     const kernel = req.type === 'measure' ? undefined : req.kernel;
     reply({ type: 'error', id: req.id, ...(kernel ? { kernel } : {}), message: errorText(err) });

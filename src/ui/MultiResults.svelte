@@ -11,6 +11,10 @@
     return n.toFixed(2);
   }
 
+  function pct(x: number): string {
+    return `${(x * 100).toFixed(1)} %`;
+  }
+
   function status(o: MultiOutcome): string {
     if (o.hidden) return 'hidden';
     if (!o.checksumOk) return o.error ?? 'failed';
@@ -26,7 +30,7 @@
       <th class="r">1 core</th>
       <th>Unit</th>
       <th class="r">Scaling</th>
-      <th class="r">Spread</th>
+      <th class="r" title="the larger of the all-cores and 1-core spreads">Spread</th>
       <th>Check</th>
     </tr>
   </thead>
@@ -43,8 +47,13 @@
         <td class="r num" data-testid="scaling" title="ideal = {o.workers}×">
           {o.valid && o.scaling !== undefined ? `${o.scaling.toFixed(2)}×` : '—'}
         </td>
-        <td class="r num" title={o.all ? `${o.all.samples} samples taken` : ''}>
-          {o.all ? `${(o.all.stats.spread * 100).toFixed(1)} %` : '—'}
+        <td
+          class="r num"
+          title={o.all && o.single
+            ? `all cores ${pct(o.all.stats.spread)} (${o.all.samples} samples) · 1 core ${pct(o.single.stats.spread)} (${o.single.samples} samples)`
+            : ''}
+        >
+          {o.all && o.single ? pct(Math.max(o.all.stats.spread, o.single.stats.spread)) : '—'}
         </td>
         <td
           data-testid="checksum"

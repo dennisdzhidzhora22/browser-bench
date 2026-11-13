@@ -8,7 +8,12 @@
     type KernelOutcome,
     type RunMode,
   } from '../lib/harness/orchestrator.ts';
-  import { startMultiRun, type MultiOutcome } from '../lib/harness/multi.ts';
+  import {
+    clampWorkers,
+    MAX_WORKERS_PER_CORE,
+    startMultiRun,
+    type MultiOutcome,
+  } from '../lib/harness/multi.ts';
   import MultiResults from './MultiResults.svelte';
   import Results from './Results.svelte';
 
@@ -26,7 +31,9 @@
   });
   let mode: RunMode = $state('quick');
   const cores = Math.max(1, navigator.hardwareConcurrency || 1);
+  const maxWorkers = cores * MAX_WORKERS_PER_CORE;
   let workers: number = $state(cores);
+  const workerCount = $derived(clampWorkers(workers, maxWorkers));
 
   type Phase =
     | { kind: 'idle' }
@@ -85,7 +92,8 @@
             kernels: c.kernels,
             size,
             mode,
-            workers,
+            workers: workerCount ?? 0,
+            maxWorkers,
             beforeKernel,
             afterKernel: (_i, o) => void multiOutcomes.push(o),
           });
@@ -158,8 +166,12 @@
           <input
             type="number"
             min="1"
-            max={cores * 2}
+            max={maxWorkers}
+            step="1"
             bind:value={workers}
+            onblur={() => {
+              if (workerCount !== undefined) workers = workerCount;
+            }}
             data-testid="workers"
           />
           <span class="muted">(this browser reports {cores} logical cores)</span>
@@ -181,7 +193,7 @@
         {phase.index + 1} / {phase.total} · {phase.current}
       </span>
     {:else}
-      <button onclick={run} disabled={totalKernels === 0 || !(workers >= 1)} data-testid="run"
+      <button onclick={run} disabled={totalKernels === 0 || (selected['cpu-multi'] && workerCount === undefined)} data-testid="run"
         >Run</button
       >
       {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
