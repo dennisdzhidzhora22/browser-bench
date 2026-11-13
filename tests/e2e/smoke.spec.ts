@@ -93,15 +93,38 @@ test.describe('M1 smoke', () => {
     await expect(checksums).toHaveCount(CPU_KERNELS.length);
     for (const cell of await checksums.all()) {
       await expect(cell).toHaveAttribute('data-ok', 'true');
-      await expect(cell).toHaveText('ok');
+      await expect(cell).toHaveAttribute('data-valid', 'true');
+      // noisy is machine-dependent (still valid), so accept either label.
+      await expect(cell).toHaveText(/^(ok|noisy)$/);
     }
 
-    // Structure only (never speed): every valid row shows a number.
+    // Structure only (never speed): a valid row shows a number. A smoke kernel can finish below
+    // timer resolution (median 0 ms), in which case there is no throughput and the cell is a dash.
     const values = page.getByTestId('value');
     await expect(values).toHaveCount(CPU_KERNELS.length);
     for (const v of await values.all()) {
-      await expect(v).toHaveText(/^\d+(\.\d+)?$/);
+      await expect(v).toHaveText(/^(\d+(\.\d+)?|—)$/);
     }
+  });
+
+  test('a run in a hidden tab marks every row hidden and invalid', async ({ page }) => {
+    await page.goto('/?smoke');
+    // The page reads document.hidden when each kernel starts and ends. Override it before
+    // the run so the result does not depend on timing.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    });
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
+
+    const checksums = page.getByTestId('checksum');
+    await expect(checksums).toHaveCount(CPU_KERNELS.length);
+    for (const cell of await checksums.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true'); // the maths was right...
+      await expect(cell).toHaveAttribute('data-valid', 'false'); // ...but the timing is discarded
+      await expect(cell).toHaveText('hidden');
+    }
+    for (const v of await page.getByTestId('value').all()) await expect(v).toHaveText('—');
   });
 
   test('Full mode also completes on smoke sizes', async ({ page }) => {
@@ -111,7 +134,10 @@ test.describe('M1 smoke', () => {
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
     const checksums = page.getByTestId('checksum');
     await expect(checksums).toHaveCount(CPU_KERNELS.length);
-    for (const cell of await checksums.all()) await expect(cell).toHaveAttribute('data-ok', 'true');
+    for (const cell of await checksums.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true');
+      await expect(cell).toHaveAttribute('data-valid', 'true');
+    }
   });
 
   test('a second run replaces the results instead of appending', async ({ page }) => {

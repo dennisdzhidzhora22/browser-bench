@@ -5,6 +5,8 @@
 import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cpuKernels } from '../../src/lib/bench/cpu/index.ts';
+import { LZ_PASSES } from '../../src/lib/bench/cpu/lz.ts';
+import { SHA256_PASSES } from '../../src/lib/bench/cpu/sha256.ts';
 import type { KernelDef } from '../../src/lib/bench/types.ts';
 import type { KernelModule } from '../../src/lib/harness/wasm.ts';
 import { f64Bits, fold, loadKernels, Rng, START } from './support.ts';
@@ -45,11 +47,17 @@ function sha256Buffer(seed: number, size: number): Buffer {
 function sha256Mirror(seed: number, size: number): number {
   const digest = createHash('sha256').update(sha256Buffer(seed, size)).digest();
   let acc = START;
-  for (let i = 0; i < 8; i++) acc = fold(acc, digest.readUInt32BE(i * 4));
+  for (let p = 0; p < SHA256_PASSES; p++) {
+    for (let i = 0; i < 8; i++) acc = fold(acc, digest.readUInt32BE(i * 4));
+  }
   return acc;
 }
 
 describe('sha256 mirror', () => {
+  it('the def agrees with the header: PASSES = 8, work = size x passes', () => {
+    expect(SHA256_PASSES).toBe(8);
+    expect(def('sha256').work(1_000_000)).toBe(8);
+  });
   const d = def('sha256');
   it('reproduces expected.smoke (node:crypto on the same buffer)', () => {
     expect(sha256Mirror(d.seed, d.sizes.smoke)).toBe(d.expected.smoke);
@@ -564,11 +572,15 @@ function lzMirror(seed: number, n: number): number {
     return acc;
   };
   let total = START;
-  for (let p = 0; p < 2; p++) total = fold(total, pass());
+  for (let p = 0; p < LZ_PASSES; p++) total = fold(total, pass());
   return total;
 }
 
 describe('lz mirror', () => {
+  it('the def agrees with the header: PASSES = 12, work = size x passes', () => {
+    expect(LZ_PASSES).toBe(12);
+    expect(def('lz').work(1_000_000)).toBe(12);
+  });
   const d = def('lz');
   it('reproduces expected.smoke', () => {
     expect(lzMirror(d.seed, d.sizes.smoke)).toBe(d.expected.smoke);

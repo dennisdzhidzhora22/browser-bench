@@ -27,7 +27,7 @@ beforeAll(async () => {
 describe('kernels.wasm module', () => {
   it('reports the ABI version the page expects', () => {
     expect(mod.abi_version()).toBe(ABI_VERSION);
-    expect(ABI_VERSION).toBe(3);
+    expect(ABI_VERSION).toBe(4);
   });
 
   it('exports linear memory', () => {
