@@ -1,31 +1,55 @@
-// Messages between the page and benchmark workers.
-// One request in, one reply out per kernel. Nothing is posted while a timed
-// region is open (docs/SPEC.md, section 5).
+// Messages between the page and a benchmark worker.
+//
+//   page                      worker
+//   init            ───────▶  compile + instantiate wasm, check ABI
+//                   ◀───────  ready | error
+//   run {id, ...}   ───────▶  prepare (untimed), warm-up, timed samples
+//                   ◀───────  result {id} | error {id}
+//
+// Cancel = Worker.terminate(). Nothing is posted while a timed region is
+// open (docs/SPEC.md, section 5).
 
-export type KernelId = 'mix';
+export interface InitRequest {
+  type: 'init';
+}
 
 export interface RunRequest {
   type: 'run';
-  kernel: KernelId;
+  /** Echoed back so replies can be matched to requests. */
+  id: number;
+  kernel: string;
   seed: number;
   size: number;
   samples: number;
 }
 
+export type ToWorker = InitRequest | RunRequest;
+
+export interface Ready {
+  type: 'ready';
+  abi: number;
+}
+
 export interface RunResult {
   type: 'result';
-  kernel: KernelId;
+  id: number;
+  kernel: string;
+  /** Checksum from the warm-up call. */
   checksum: number;
-  /** True when the warm-up and every sample returned the same checksum. */
+  /** True when every timed sample returned the warm-up checksum. */
   checksumConsistent: boolean;
+  /** Milliseconds spent in `prepare` (untimed work, reported for info). */
+  prepareMs: number;
   /** Milliseconds per sample, measured inside the worker. Transferred, not copied. */
   times: Float64Array;
 }
 
-export interface RunError {
+export interface WorkerError {
   type: 'error';
+  /** Absent when the error is not tied to a run (e.g. init failed). */
+  id?: number;
+  kernel?: string;
   message: string;
 }
 
-export type ToWorker = RunRequest;
-export type FromWorker = RunResult | RunError;
+export type FromWorker = Ready | RunResult | WorkerError;

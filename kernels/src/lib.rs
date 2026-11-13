@@ -1,30 +1,37 @@
 //! Benchmark kernels, compiled to `wasm32-unknown-unknown`.
 //!
-//! ABI rules (docs/SPEC.md, D2):
-//! - Plain `extern "C"` exports, no wasm-bindgen.
-//! - Only `i32`/`u32`/`f64` cross the boundary, so JS never needs BigInt glue.
-//! - Every kernel is deterministic: `(seed, size) -> checksum`.
-//! - The JS side never runs code inside a timed region except the kernel call.
+//! # ABI (docs/SPEC.md, D2)
 //!
-//! The crate is `no_std` so the module has no imports and no allocator by
-//! default. Kernels that need buffers get them from `alloc_*` exports added in
-//! later milestones.
+//! Every kernel `<id>` exports exactly two functions:
+//!
+//! - `<id>_prepare(seed: u32, size: u32) -> u32` — untimed. Allocates buffers
+//!   from the arena and fills inputs. Returns 0 on success, nonzero on failure
+//!   (for example 1 = out of memory).
+//! - `<id>_run() -> u32` — timed. Does the work on the prepared inputs and
+//!   returns a checksum. It must be idempotent: calling it N times after one
+//!   `prepare` returns the same checksum every time. If the work mutates its
+//!   input (sorting, compressing in place), copy the pristine input into a work
+//!   buffer at the start of `run`; that copy is part of the measured work.
+//!
+//! Rules: plain `extern "C"`, no wasm-bindgen, only `u32` crosses the boundary,
+//! deterministic output, no `std` (so no libm: write your own `sin`/`cos`/`exp`
+//! approximations from `+ - * /` and `sqrt` if needed, so results are bit-exact
+//! across browsers and mirrorable in JS). Floats feed the checksum through
+//! `checksum::f64_bits`.
 
 #![no_std]
 
+pub mod arena;
+pub mod checksum;
+pub mod global;
+
 mod mix;
 
-/// Bumped whenever any kernel's work or checksum changes. JS checks this
-/// against the value it was built for and refuses to run on a mismatch.
+/// Bumped whenever any kernel's work, sizes or checksum changes. JS checks this
+/// against `ABI_VERSION` in src/lib/harness/wasm.ts.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    1
-}
-
-/// M0 smoke kernel. See `mix.rs`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_mix(seed: u32, iterations: u32) -> u32 {
-    mix::run(seed, iterations)
+    2
 }
 
 #[panic_handler]

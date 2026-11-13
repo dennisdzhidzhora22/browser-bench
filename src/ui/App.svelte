@@ -1,36 +1,92 @@
 <script lang="ts">
-  import { runInWorker } from '../lib/harness/run.ts';
-  import { summarize, type SampleStats } from '../lib/harness/stats.ts';
-  import { MIX_EXPECTED, MIX_SEED, MIX_SIZES, type MixSize } from '../lib/bench/mix.ts';
+  import { tick } from 'svelte';
+  import { components } from '../lib/bench/components.ts';
+  import type { ComponentId, KernelDef, SizeId } from '../lib/bench/types.ts';
+  import {
+    Cancelled,
+    startRun,
+    type KernelOutcome,
+    type Run,
+    type RunMode,
+  } from '../lib/harness/orchestrator.ts';
+  import Results from './Results.svelte';
 
   const isolated = globalThis.crossOriginIsolated === true;
   const dev = import.meta.env.DEV;
-  // `?smoke` selects the tiny size used by automated tests (docs/SPEC.md, section 3).
-  const size: MixSize = new URLSearchParams(location.search).has('smoke') ? 'smoke' : 'standard';
+  // `?smoke` selects the tiny sizes used by automated tests (docs/SPEC.md, section 3).
+  const size: SizeId = new URLSearchParams(location.search).has('smoke') ? 'smoke' : 'standard';
 
-  type State =
+  let selected: Record<ComponentId, boolean> = $state({
+    'cpu-single': true,
+    'cpu-multi': false,
+    memory: false,
+    gpu: false,
+    storage: false,
+  });
+  let mode: RunMode = $state('quick');
+
+  type Phase =
     | { kind: 'idle' }
-    | { kind: 'running' }
-    | { kind: 'done'; checksumOk: boolean; stats: SampleStats; miterPerSec: number }
+    | { kind: 'running'; index: number; total: number; current: string }
+    | { kind: 'done' }
+    | { kind: 'cancelled' }
     | { kind: 'error'; message: string };
 
-  let state: State = $state({ kind: 'idle' });
+  let phase: Phase = $state({ kind: 'idle' });
+  let outcomes: KernelOutcome[] = $state([]);
+  let active: Run | undefined;
+
+  const kernelsToRun = $derived(
+    components.filter((c) => selected[c.id] && c.kernels.length > 0).flatMap((c) => c.kernels),
+  );
+
+  /** Lets Svelte flush and the browser paint before the next kernel starts. */
+  async function settle(): Promise<void> {
+    await tick();
+    await new Promise<void>((resolve) => {
+      // rAF never fires in a hidden tab; the timeout keeps the run moving.
+      const t = setTimeout(resolve, 100);
+      requestAnimationFrame(() =>
+        setTimeout(() => {
+          clearTimeout(t);
+          resolve();
+        }, 0),
+      );
+    });
+  }
 
   async function run() {
-    state = { kind: 'running' };
+    const list: readonly KernelDef[] = kernelsToRun;
+    if (list.length === 0) return;
+    outcomes = [];
+    phase = { kind: 'running', index: 0, total: list.length, current: list[0]!.name };
+    active = startRun({
+      kernels: list,
+      size,
+      mode,
+      beforeKernel: async (index, def) => {
+        phase = { kind: 'running', index, total: list.length, current: def.name };
+        await settle();
+      },
+      afterKernel: (_i, outcome) => {
+        outcomes.push(outcome);
+      },
+    });
     try {
-      const iterations = MIX_SIZES[size];
-      const res = await runInWorker({ kernel: 'mix', seed: MIX_SEED, size: iterations, samples: 3 });
-      const stats = summarize(res.times);
-      state = {
-        kind: 'done',
-        checksumOk: res.checksumConsistent && res.checksum === MIX_EXPECTED[size],
-        stats,
-        miterPerSec: stats.median > 0 ? iterations / stats.median / 1000 : 0,
-      };
+      await active.done;
+      phase = { kind: 'done' };
     } catch (err) {
-      state = { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+      phase =
+        err instanceof Cancelled
+          ? { kind: 'cancelled' }
+          : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      active = undefined;
     }
+  }
+
+  function cancel() {
+    active?.cancel();
   }
 </script>
 
@@ -50,25 +106,49 @@
     </p>
   </section>
 {:else}
-  <p data-testid="isolated">Cross-origin isolated: yes</p>
+  <p class="muted" data-testid="isolated">Cross-origin isolated: yes{size === 'smoke' ? ' · smoke sizes' : ''}</p>
 
-  <button onclick={run} disabled={state.kind === 'running'} data-testid="run">
-    {state.kind === 'running' ? 'Running…' : `Run smoke kernel (${size})`}
-  </button>
+  <fieldset disabled={phase.kind === 'running'}>
+    <legend>Components</legend>
+    {#each components as c (c.id)}
+      <label class:off={c.kernels.length === 0}>
+        <input
+          type="checkbox"
+          bind:checked={selected[c.id]}
+          disabled={c.kernels.length === 0}
+          data-testid="component-{c.id}"
+        />
+        {c.name}
+        {#if c.kernels.length === 0}<span class="muted">(not built yet)</span>{/if}
+      </label>
+    {/each}
+  </fieldset>
 
-  {#if state.kind === 'done'}
-    <dl data-testid="result">
-      <dt>Checksum</dt>
-      <dd data-testid="checksum" data-ok={state.checksumOk}>{state.checksumOk ? 'ok' : 'MISMATCH'}</dd>
-      <dt>Median</dt>
-      <dd class="num">{state.stats.median.toFixed(2)} ms</dd>
-      <dt>Throughput</dt>
-      <dd class="num">{state.miterPerSec.toFixed(1)} M iter/s</dd>
-      <dt>Spread</dt>
-      <dd class="num">{(state.stats.spread * 100).toFixed(1)} %</dd>
-    </dl>
-  {:else if state.kind === 'error'}
-    <p class="error" data-testid="error">{state.message}</p>
+  <fieldset disabled={phase.kind === 'running'}>
+    <legend>Mode</legend>
+    <label><input type="radio" bind:group={mode} value="quick" data-testid="mode-quick" /> Quick</label>
+    <label><input type="radio" bind:group={mode} value="full" data-testid="mode-full" /> Full</label>
+  </fieldset>
+
+  <p>
+    {#if phase.kind === 'running'}
+      <button onclick={cancel} data-testid="cancel">Cancel</button>
+      <span data-testid="progress">
+        {phase.index + 1} / {phase.total} · {phase.current}
+      </span>
+    {:else}
+      <button onclick={run} disabled={kernelsToRun.length === 0} data-testid="run">Run</button>
+      {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
+      {#if phase.kind === 'cancelled'}<span data-testid="status">Cancelled</span>{/if}
+    {/if}
+  </p>
+
+  {#if phase.kind === 'error'}
+    <p class="error" data-testid="error">{phase.message}</p>
+  {/if}
+
+  {#if outcomes.length > 0}
+    <Results {outcomes} />
   {/if}
 {/if}
 
@@ -84,12 +164,15 @@
     border-left: 4px solid #dc2626;
     padding-left: 0.8rem;
   }
-  dl {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.25rem 1rem;
+  fieldset {
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    margin: 0 0 0.75rem;
   }
-  dd {
-    margin: 0;
+  label {
+    display: block;
+  }
+  .off,
+  .muted {
+    opacity: 0.6;
   }
 </style>

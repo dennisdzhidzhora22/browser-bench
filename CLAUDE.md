@@ -18,8 +18,12 @@ tests as skipped.
 
 ## Rules
 
-- Rust kernels: zero dependencies, `no_std`, raw `extern "C"` exports, only `i32`/`u32`/`f64`
-  across the boundary. Every kernel is `(seed, size) -> checksum` and deterministic.
+- Rust kernels: zero dependencies, `no_std`, raw `extern "C"` exports, only `u32` across the
+  boundary. Each kernel `<id>` exports `<id>_prepare(seed, size) -> status` (untimed) and
+  `<id>_run() -> checksum` (timed, idempotent). Full contract: top of `kernels/src/lib.rs`.
+  Buffers come from `kernels/src/arena.rs`; shared RNG/checksum helpers in `checksum.rs`.
+- Each kernel has a `KernelDef` (`src/lib/bench/types.ts`) with sizes, expected checksums and
+  a `work(size)` function; CPU kernels are listed in `src/lib/bench/cpu/index.ts`.
 - A kernel's reference algorithm is documented in its `.rs` file so tests can mirror it in JS.
 - Any change to a kernel's work or checksum bumps `abi_version()` in `kernels/src/lib.rs` and
   `ABI_VERSION` in `src/lib/harness/wasm.ts`.

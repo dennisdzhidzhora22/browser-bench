@@ -1,8 +1,9 @@
-// M0 smoke kernel definition. Proves the pipeline; not a scored benchmark.
+// Pipeline smoke kernel (kernels/src/mix.rs). Not a scored benchmark; used by
+// tests and as the reference example of a KernelDef.
+import type { KernelDef } from './types.ts';
 
 export const MIX_SEED = 1;
 
-/** Iteration counts. `standard` takes roughly 250–400 ms on a desktop CPU. */
 export const MIX_SIZES = {
   smoke: 1_000,
   standard: 200_000_000,
@@ -10,11 +11,18 @@ export const MIX_SIZES = {
 
 export type MixSize = keyof typeof MIX_SIZES;
 
-/**
- * Expected checksums for seed MIX_SEED. Computed from the reference algorithm
- * documented in kernels/src/mix.rs and checked against the wasm build.
- */
 export const MIX_EXPECTED: Record<MixSize, number> = {
   smoke: 648_056_936,
   standard: 980_582_964,
+};
+
+export const mix: KernelDef = {
+  id: 'mix',
+  name: 'Mix (pipeline check)',
+  stresses: 'integer ops',
+  unit: 'M iter/s',
+  seed: MIX_SEED,
+  sizes: MIX_SIZES,
+  expected: MIX_EXPECTED,
+  work: (size) => size / 1e6,
 };
