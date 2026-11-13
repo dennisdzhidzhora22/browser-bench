@@ -7,15 +7,20 @@ import {
   type RunMode,
 } from '../../src/lib/harness/orchestrator.ts';
 import {
-  MAX_REPS,
+  BASELINE_MAX_MS,
+  clampWorkers,
+  defaultMaxWorkers,
+  MAX_WORKERS_PER_CORE,
+  MEASURE_SPIN_MS,
   multiSize,
-  repsFor,
   startMultiRun,
   WINDOW_MS,
   type MultiOptions,
 } from '../../src/lib/harness/multi.ts';
 import {
   CTRL,
+  groupMsPerRep,
+  SLOT,
   type FromWorker,
   type InitRequest,
   type MeasureRequest,
@@ -57,52 +62,95 @@ describe('multiSize', () => {
   });
 });
 
-// ───────────────────────────── repsFor ─────────────────────────────
+// ───────────────────────────── clampWorkers ─────────────────────────────
 
-describe('repsFor', () => {
-  it('fills the window: ceil(window / run time)', () => {
-    expect(repsFor(100, 300)).toBe(3);
-    expect(repsFor(101, 300)).toBe(3);
-    expect(repsFor(99, 300)).toBe(4);
-    expect(repsFor(7, 300)).toBe(Math.ceil(300 / 7));
+describe('clampWorkers', () => {
+  it('truncates to a whole number', () => {
+    expect(clampWorkers(2.5, 8)).toBe(2);
+    expect(clampWorkers(2.999, 8)).toBe(2);
+    expect(clampWorkers(1.2, 8)).toBe(1);
+    expect(clampWorkers(4, 8)).toBe(4);
   });
 
-  it('is at least 1 when one run already exceeds the window', () => {
-    expect(repsFor(300, 300)).toBe(1);
-    expect(repsFor(301, 300)).toBe(1);
-    expect(repsFor(50_000, 300)).toBe(1);
+  it('is undefined when there is no usable count: below 1, negative, NaN, infinite', () => {
+    expect(clampWorkers(0, 8)).toBeUndefined();
+    expect(clampWorkers(0.9, 8)).toBeUndefined();
+    expect(clampWorkers(-3, 8)).toBeUndefined();
+    expect(clampWorkers(NaN, 8)).toBeUndefined();
+    expect(clampWorkers(Infinity, 8)).toBeUndefined();
+    expect(clampWorkers(-Infinity, 8)).toBeUndefined();
   });
 
-  it('a zero or negative window means one rep (smoke)', () => {
-    expect(repsFor(5, 0)).toBe(1);
-    expect(repsFor(0, 0)).toBe(1);
-    expect(repsFor(NaN, 0)).toBe(1);
-    expect(repsFor(5, -10)).toBe(1);
+  it('caps at max', () => {
+    expect(clampWorkers(9, 8)).toBe(8);
+    expect(clampWorkers(8, 8)).toBe(8);
+    expect(clampWorkers(1_000_000, 8)).toBe(8);
+    expect(clampWorkers(20, 8.9)).toBe(8);
   });
 
-  it('an unusable run time (0, negative, NaN) gives MAX_REPS instead of dividing by zero', () => {
-    expect(repsFor(0, 300)).toBe(MAX_REPS);
-    expect(repsFor(-1, 300)).toBe(MAX_REPS);
-    expect(repsFor(NaN, 300)).toBe(MAX_REPS);
+  it('a max below 1 still allows one worker', () => {
+    expect(clampWorkers(5, 0)).toBe(1);
+    expect(clampWorkers(5, -2)).toBe(1);
+  });
+});
+
+describe('constants', () => {
+  it('windows are per mode and Full is longer; the baseline is capped at 1 s', () => {
+    expect(WINDOW_MS.quick).toBeGreaterThan(0);
+    expect(WINDOW_MS.full).toBeGreaterThan(WINDOW_MS.quick);
+    expect(BASELINE_MAX_MS).toBe(1_000);
+    expect(MEASURE_SPIN_MS).toBeGreaterThan(0);
+    expect(MAX_WORKERS_PER_CORE).toBeGreaterThanOrEqual(1);
   });
 
-  it('is capped at MAX_REPS for a very fast run', () => {
-    expect(repsFor(1e-9, 300)).toBe(MAX_REPS);
-    expect(repsFor(300 / MAX_REPS, 300)).toBe(MAX_REPS);
-    expect(repsFor(300 / (MAX_REPS + 1), 300)).toBe(MAX_REPS);
-    expect(repsFor(300 / (MAX_REPS - 1), 300)).toBe(MAX_REPS - 1);
-    expect(repsFor(300 / (MAX_REPS / 2), 300)).toBe(MAX_REPS / 2);
+  it('defaultMaxWorkers is a whole multiple of MAX_WORKERS_PER_CORE', () => {
+    const n = defaultMaxWorkers();
+    expect(Number.isInteger(n)).toBe(true);
+    expect(n).toBeGreaterThanOrEqual(MAX_WORKERS_PER_CORE);
+    expect(n % MAX_WORKERS_PER_CORE).toBe(0);
+  });
+});
+
+describe('groupMsPerRep (summed rates)', () => {
+  const slots = (...w: Array<[t0: number, t1: number, reps: number]>) => Float64Array.from(w.flat());
+
+  it('one worker: (t1 - t0) / reps', () => {
+    expect(groupMsPerRep(slots([0, 100, 10]), 0, 1)).toBeCloseTo(10, 12);
   });
 
-  it('constants match the spec: ~300 ms window', () => {
-    expect(WINDOW_MS).toBe(300);
-    expect(MAX_REPS).toBeGreaterThan(0);
+  it('two workers: rates add, so 10 reps/100 ms + 5 reps/100 ms = 0.15 reps/ms', () => {
+    expect(groupMsPerRep(slots([0, 100, 10], [0, 100, 5]), 0, 2)).toBeCloseTo(1 / 0.15, 12);
+  });
+
+  it('is not the wall time: a worker with a longer window and proportional reps adds the same rate', () => {
+    expect(groupMsPerRep(slots([0, 100, 10], [20, 320, 30]), 0, 2)).toBeCloseTo(5, 12);
+  });
+
+  it('reads the right sample, and uses SLOT entries per worker', () => {
+    expect(SLOT).toBe(3);
+    const t = slots([0, 100, 10], [0, 100, 10], /* sample 1 */ [0, 50, 10], [0, 50, 10]);
+    expect(groupMsPerRep(t, 0, 2)).toBeCloseTo(5, 12);
+    expect(groupMsPerRep(t, 1, 2)).toBeCloseTo(2.5, 12);
+  });
+
+  it('is 0 when no worker has a positive duration', () => {
+    expect(groupMsPerRep(slots([5, 5, 3], [7, 7, 1]), 0, 2)).toBe(0);
+    expect(groupMsPerRep(slots([0, 0, 0]), 0, 1)).toBe(0);
+  });
+
+  it('ignores a worker with a non-positive duration instead of dividing by zero', () => {
+    expect(groupMsPerRep(slots([0, 100, 10], [5, 5, 9]), 0, 2)).toBeCloseTo(10, 12);
   });
 });
 
 // ─────────────────────── startMultiRun with fake workers ───────────────────────
 
-type Timing = (count: number, index: number, sample: number) => { t0: number; t1: number };
+/** One worker's sample: start, end (ms) and reps done. `reps` defaults to 10. */
+type Timing = (
+  count: number,
+  index: number,
+  sample: number,
+) => { t0: number; t1: number; reps?: number };
 
 interface Behaviour {
   /** Checksum answered to `prepare`. Default: the expected checksum for the size asked. */
@@ -116,13 +164,8 @@ interface Behaviour {
   override?: (msg: ToWorker, worker: FakeWorker) => FromWorker | 'hang' | undefined;
 }
 
-/** Group wall = 100 ms for any group size; one worker alone takes 50 ms. */
-const defaultTiming: Timing = (count, index, s) => {
-  const base = s * 1_000;
-  if (count === 1) return { t0: base, t1: base + 50 };
-  // Workers start up to 10 ms apart and the last one finishes at +100.
-  return { t0: base + (index * 10) / Math.max(1, count - 1), t1: base + 100 - (count - 1 - index) };
-};
+/** Every worker does 10 reps in 100 ms (0.1 reps/ms), alone or in a group: perfect scaling. */
+const defaultTiming: Timing = (_count, _index, s) => ({ t0: s * 1_000, t1: s * 1_000 + 100, reps: 10 });
 
 class FakeWorker {
   onmessage: ((e: MessageEvent<FromWorker>) => void) | null = null;
@@ -175,16 +218,17 @@ class FakeWorker {
         };
       }
       case 'measure': {
-        // Simulates the shared barrier synchronously: write every sample's start and end
+        // Simulates the shared barrier synchronously: write every sample's start, end and reps
         // into this worker's slots, then publish the sample count.
         const { control, times, index, count } = msg.group;
         const n = b.samples ?? msg.minSamples;
         const timing = b.timing ?? defaultTiming;
         for (let s = 0; s < n; s++) {
-          const { t0, t1 } = timing(count, index, s);
-          const slot = (s * count + index) * 2;
+          const { t0, t1, reps } = timing(count, index, s);
+          const slot = (s * count + index) * SLOT;
           times[slot] = t0;
           times[slot + 1] = t1;
+          times[slot + 2] = reps ?? 10;
         }
         Atomics.store(control, CTRL.SAMPLES, n);
         return {
@@ -283,34 +327,51 @@ describe('startMultiRun', () => {
     it.each<RunMode>(['quick', 'full'])('measure carries the SAMPLING plan for %s', async (mode) => {
       const { run, workersMade } = start({ kernels: [defs[0]!], size: 'smoke', mode, workers: 2 });
       await run.done;
-      for (const m of workersMade[0]!.of('measure')) expect(m).toMatchObject({ ...SAMPLING[mode] });
-      // The times buffer has room for maxSamples x workers x (t0, t1).
-      const all = workersMade[0]!.of('measure')[1]!;
-      expect(all.group.times.length).toBe(SAMPLING[mode].maxSamples * 2 * 2);
+      const [single, all] = workersMade[0]!.of('measure');
+      const { maxMs: _planMaxMs, ...rest } = SAMPLING[mode];
+      for (const m of [single!, all!]) expect(m).toMatchObject(rest);
+      expect(all!.maxMs).toBe(SAMPLING[mode].maxMs);
+      // The times buffer has room for maxSamples x workers x SLOT.
+      expect(all!.group.times.length).toBe(SAMPLING[mode].maxSamples * 2 * SLOT);
+      expect(single!.group.times.length).toBe(SAMPLING[mode].maxSamples * 1 * SLOT);
     });
 
-    it('reps: smoke is 1; standard fills the window from the prepared run time', async () => {
-      const smoke = start({ kernels: [defs[0]!], size: 'smoke', workers: 2 }, { runMs: 1 });
-      await smoke.run.done;
-      for (const m of smoke.workersMade[0]!.of('measure')) expect(m.reps).toBe(1);
-
-      const std = start({ kernels: [defs[0]!], size: 'standard', workers: 2 }, { runMs: 30 });
-      await std.run.done;
-      for (const m of std.workersMade[0]!.of('measure')) expect(m.reps).toBe(10); // ceil(300/30)
-
-      const slow = start({ kernels: [defs[0]!], size: 'standard', workers: 2 }, { runMs: 900 });
-      await slow.run.done;
-      for (const m of slow.workersMade[0]!.of('measure')) expect(m.reps).toBe(1);
+    it('the baseline carries maxMs <= BASELINE_MAX_MS; the all-workers measure keeps the plan maxMs', async () => {
+      for (const mode of ['quick', 'full'] as const) {
+        const { run, workersMade } = start({ kernels: [defs[0]!], size: 'smoke', mode, workers: 2 });
+        await run.done;
+        const [single, all] = workersMade[0]!.of('measure');
+        expect(single!.maxMs).toBeLessThanOrEqual(BASELINE_MAX_MS);
+        expect(single!.maxMs).toBe(Math.min(SAMPLING[mode].maxMs, BASELINE_MAX_MS));
+        expect(all!.maxMs).toBe(SAMPLING[mode].maxMs);
+      }
     });
 
-    it('reps are sized from worker 0 and the same for every worker in both measures', async () => {
-      const { run, workersMade } = start(
-        { kernels: [defs[0]!], size: 'standard', workers: 3 },
-        { override: (m, w) => (m.type === 'prepare' ? { type: 'prepared', id: m.id, checksum: 222, runMs: w.number === 0 ? 60 : 6 } : undefined) },
-      );
+    it('both measures carry windowMs and spinMs; there is no reps field any more', async () => {
+      const { run, workersMade } = start({ kernels: [defs[0]!], size: 'standard', workers: 2, mode: 'full' });
       await run.done;
-      const reps = workersMade.flatMap((w) => w.of('measure').map((m) => m.reps));
-      expect(new Set(reps)).toEqual(new Set([5])); // ceil(300/60)
+      const measures = workersMade.flatMap((w) => w.of('measure'));
+      expect(measures).toHaveLength(3); // baseline on worker 0, then both workers
+      for (const m of measures) {
+        expect(m.windowMs).toBe(WINDOW_MS.full);
+        expect(m.spinMs).toBe(MEASURE_SPIN_MS);
+        expect(m).not.toHaveProperty('reps');
+      }
+    });
+
+    it('windowMs follows the mode at standard size and is 0 for smoke; measureSpinMs overrides the spin', async () => {
+      const q = start({ kernels: [defs[0]!], size: 'standard', workers: 1, mode: 'quick', measureSpinMs: 7 });
+      await q.run.done;
+      for (const m of q.workersMade[0]!.of('measure')) {
+        expect(m.windowMs).toBe(WINDOW_MS.quick);
+        expect(m.spinMs).toBe(7);
+      }
+      const smoke = start({ kernels: [defs[0]!], size: 'smoke', workers: 1, measureSpinMs: 0 });
+      await smoke.run.done;
+      for (const m of smoke.workersMade[0]!.of('measure')) {
+        expect(m.windowMs).toBe(0);
+        expect(m.spinMs).toBe(0);
+      }
     });
 
     it('runs kernels in order, with the hooks around each', async () => {
@@ -370,86 +431,109 @@ describe('startMultiRun', () => {
   });
 
   describe('results', () => {
-    it('throughput = workers x reps x work(size) / median wall seconds', async () => {
-      // Smoke: reps = 1, work(10) = 20. single wall 50 ms, all wall 100 ms (4 workers).
+    it('throughput = work(size) / median ms-per-rep: single 0.1 reps/ms, four workers 0.4 reps/ms', async () => {
+      // Smoke: work(10) = 20. One worker: 10 reps / 100 ms -> 10 ms per rep -> 20 / 0.01 = 2000.
       const { run } = start({ kernels: [defs[0]!], size: 'smoke', workers: 4 });
       const [o] = await run.done;
       expect(o!.valid).toBe(true);
       expect(o!.error).toBeUndefined();
       expect(o!.single!.workers).toBe(1);
       expect(o!.all!.workers).toBe(4);
-      expect(o!.single!.stats.median).toBeCloseTo(50, 9);
-      expect(o!.all!.stats.median).toBeCloseTo(100, 9);
-      expect(o!.single!.throughput).toBeCloseTo((1 * 1 * 20) / 0.05, 6);
-      expect(o!.all!.throughput).toBeCloseTo((4 * 1 * 20) / 0.1, 6);
+      expect(o!.single!.stats.median).toBeCloseTo(10, 9);
+      expect(o!.all!.stats.median).toBeCloseTo(2.5, 9);
+      expect(o!.single!.throughput).toBeCloseTo(20 / 0.01, 6);
+      expect(o!.all!.throughput).toBeCloseTo(20 / 0.0025, 6);
     });
 
-    it('standard size: uses reps and work(multi.size), not work(standard size)', async () => {
+    it('standard size: uses work(multi.size), not work(standard size)', async () => {
       const multi = fakeDef('m', { multi: { size: 500, expected: 333 } });
-      const { run } = start({ kernels: [multi], size: 'standard', workers: 2 }, { runMs: 30 });
+      const { run } = start({ kernels: [multi], size: 'standard', workers: 2 });
       const [o] = await run.done;
       expect(o!.valid).toBe(true);
-      // reps 10, work(500) = 1000. all wall 100 ms with 2 workers; single 50 ms.
-      expect(o!.all!.throughput).toBeCloseTo((2 * 10 * 1000) / 0.1, 6);
-      expect(o!.single!.throughput).toBeCloseTo((1 * 10 * 1000) / 0.05, 6);
+      // work(500) = 1000. Single: 10 ms per rep. Two workers: 5 ms per rep.
+      expect(o!.single!.throughput).toBeCloseTo(1000 / 0.01, 6);
+      expect(o!.all!.throughput).toBeCloseTo(1000 / 0.005, 6);
     });
 
     it('scaling = all throughput / single throughput', async () => {
       const { run } = start({ kernels: [defs[0]!], size: 'smoke', workers: 4 });
       const [o] = await run.done;
-      // (4 / 0.1) / (1 / 0.05) = 2
-      expect(o!.scaling).toBeCloseTo(2, 9);
+      expect(o!.scaling).toBeCloseTo(4, 9);
       expect(o!.scaling).toBeCloseTo(o!.all!.throughput! / o!.single!.throughput!, 9);
     });
 
-    it('ideal scaling equals the worker count', async () => {
+    it('scaling is below the worker count when each core is slower inside the group', async () => {
       const { run } = start(
         { kernels: [defs[0]!], size: 'smoke', workers: 4 },
-        { timing: (_count, _index, s) => ({ t0: s * 1000, t1: s * 1000 + 50 }) },
+        // Alone 10 reps / 100 ms; in a group of 4 each worker only manages 5 reps / 100 ms.
+        { timing: (count, _i, s) => ({ t0: s * 1000, t1: s * 1000 + 100, reps: count === 1 ? 10 : 5 }) },
       );
       const [o] = await run.done;
-      expect(o!.scaling).toBeCloseTo(4, 9);
+      expect(o!.scaling).toBeCloseTo(2, 9); // 4 x 0.05 / 0.1
     });
 
-    it('a sample time is the wall time: first start to last finish, so a slow core holds it back', async () => {
+    it('summed rates: workers with different rates add up (wall time would not give this)', async () => {
+      // Worker 0: 10 reps / 100 ms = 0.10 reps/ms. Worker 1: 5 reps / 100 ms = 0.05 reps/ms.
+      // Sum 0.15 -> 6.667 ms per rep -> 20 / 0.006667 = 3000 units/s.
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'smoke', workers: 2 },
+        {
+          timing: (count, index, s) => ({
+            t0: s * 1000,
+            t1: s * 1000 + 100,
+            reps: count === 1 ? 10 : index === 0 ? 10 : 5,
+          }),
+        },
+      );
+      const [o] = await run.done;
+      expect(o!.all!.throughput).toBeCloseTo(3000, 6);
+      expect(o!.single!.throughput).toBeCloseTo(2000, 6);
+      expect(o!.scaling).toBeCloseTo(1.5, 9);
+    });
+
+    it('summed rates ignore window length: a worker that starts late and runs longer adds its own rate', async () => {
+      // Worker 1 starts 20 ms late and runs 300 ms for 30 reps: still 0.1 reps/ms, so the sum
+      // is 0.2 reps/ms (a wall-time model would give 40 reps / 320 ms = 0.125 reps/ms).
       const { run } = start(
         { kernels: [defs[0]!], size: 'smoke', workers: 2 },
         {
           timing: (count, index, s) => {
             const base = s * 10_000;
-            if (count === 1) return { t0: base, t1: base + 100 };
-            // Worker 0 is quick, worker 1 starts 20 ms late and takes 300 ms.
-            return index === 0 ? { t0: base, t1: base + 100 } : { t0: base + 20, t1: base + 320 };
+            if (count === 1 || index === 0) return { t0: base, t1: base + 100, reps: 10 };
+            return { t0: base + 20, t1: base + 320, reps: 30 };
           },
         },
       );
       const [o] = await run.done;
-      expect(o!.all!.stats.median).toBeCloseTo(320, 9); // 320 - 0, not the mean or the fastest
-      expect(o!.all!.throughput).toBeCloseTo((2 * 20) / 0.32, 6);
+      expect(o!.all!.stats.median).toBeCloseTo(5, 9);
+      expect(o!.all!.throughput).toBeCloseTo(20 / 0.005, 6);
+      expect(o!.scaling).toBeCloseTo(2, 9);
     });
 
-    it('uses the fastest minSamples walls; slow samples are interference', async () => {
-      const walls = [100, 100, 100, 900, 900];
+    it('uses the fastest minSamples samples; slow samples are interference', async () => {
+      // Window lengths 100, 100, 100, 900, 900 ms for 10 reps each: the last two are 9x slower.
+      const dur = [100, 100, 100, 900, 900];
       const { run } = start(
         { kernels: [defs[0]!], size: 'smoke', workers: 2 },
         {
           samples: 5,
-          timing: (_c, _i, s) => ({ t0: s * 10_000, t1: s * 10_000 + walls[s]! }),
+          timing: (_c, _i, s) => ({ t0: s * 10_000, t1: s * 10_000 + dur[s]!, reps: 10 }),
         },
       );
       const [o] = await run.done;
       expect(o!.all!.samples).toBe(5);
       expect(o!.single!.samples).toBe(5);
-      expect(o!.all!.stats).toMatchObject({ median: 100, min: 100, max: 100, spread: 0 });
+      // Two workers at 0.1 reps/ms in the fast samples: 5 ms per rep.
+      expect(o!.all!.stats).toMatchObject({ median: 5, min: 5, max: 5, spread: 0 });
       expect(o!.noisy).toBe(false);
       expect(o!.valid).toBe(true);
     });
 
     it('flags noisy (still valid) when the fastest samples spread above NOISY_SPREAD', async () => {
-      const walls = [100, 120, 140]; // spread 40 / 120 = 33 %
+      const dur = [100, 120, 140]; // 10 reps each: 10, 12, 14 ms per rep alone; spread 33 %
       const { run } = start(
         { kernels: [defs[0]!], size: 'smoke', workers: 2 },
-        { timing: (_c, _i, s) => ({ t0: s * 10_000, t1: s * 10_000 + walls[s]! }) },
+        { timing: (_c, _i, s) => ({ t0: s * 10_000, t1: s * 10_000 + dur[s]!, reps: 10 }) },
       );
       const [o] = await run.done;
       expect(o!.all!.stats.spread).toBeGreaterThan(NOISY_SPREAD);
@@ -458,7 +542,7 @@ describe('startMultiRun', () => {
       expect(o!.error).toBeUndefined();
     });
 
-    it('zero wall time gives no throughput and no scaling, but is not an error', async () => {
+    it('zero duration gives no throughput and no scaling, but is not an error', async () => {
       const { run } = start(
         { kernels: [defs[0]!], size: 'smoke', workers: 2 },
         { timing: (_c, _i, s) => ({ t0: s, t1: s }) },
@@ -692,6 +776,130 @@ describe('startMultiRun', () => {
       const { run, workersMade } = start({ kernels: defs, size: 'smoke', workers });
       await expect(run.done).rejects.toThrow(/at least 1/);
       expect(workersMade).toHaveLength(0);
+    });
+  });
+
+  describe('worker count', () => {
+    it('a fractional count is truncated: 2.5 starts 2 workers', async () => {
+      const { run, workersMade } = start({ kernels: [defs[0]!], size: 'smoke', workers: 2.5 });
+      const [o] = await run.done;
+      expect(workersMade).toHaveLength(2);
+      expect(o!.workers).toBe(2);
+      expect(o!.all!.workers).toBe(2);
+    });
+
+    it('a count above maxWorkers is clamped: makeWorker is called max times', async () => {
+      const { run, workersMade } = start({ kernels: defs, size: 'smoke', workers: 20, maxWorkers: 6 });
+      const outcomes = await run.done;
+      expect(workersMade).toHaveLength(6);
+      expect(outcomes.every((o) => o.workers === 6 && o.all!.workers === 6)).toBe(true);
+      expect(workersMade[0]!.of('measure').at(-1)!.group.count).toBe(6);
+    });
+
+    it('a count equal to maxWorkers is kept', async () => {
+      const { run, workersMade } = start({ kernels: [defs[0]!], size: 'smoke', workers: 3, maxWorkers: 3 });
+      await run.done;
+      expect(workersMade).toHaveLength(3);
+    });
+
+    it('without maxWorkers the cap is defaultMaxWorkers()', async () => {
+      const { run, workersMade } = start({ kernels: [defs[0]!], size: 'smoke', workers: 100_000 });
+      const [o] = await run.done;
+      expect(workersMade).toHaveLength(defaultMaxWorkers());
+      expect(o!.workers).toBe(defaultMaxWorkers());
+    });
+  });
+
+  describe('first error wins', () => {
+    it('an error reply to prepare from one worker fails the kernel without waiting for the others', async () => {
+      const { run, workersMade } = start(
+        { kernels: defs, size: 'smoke', workers: 3 },
+        {
+          override: (m, w) => {
+            if (m.type !== 'prepare' || m.kernel !== 'a' || w.number > 2) return undefined;
+            // The first pool: worker 1 fails at once, workers 0 and 2 never answer.
+            return w.number === 1
+              ? { type: 'error', id: m.id, kernel: m.kernel, message: 'prepare failed (out of memory)' }
+              : 'hang';
+          },
+        },
+      );
+      const outcomes = await run.done; // would never settle if it waited for workers 0 and 2
+      expect(outcomes.map((o) => o.valid)).toEqual([false, true, true]);
+      expect(outcomes[0]!.error).toBe('prepare failed (out of memory)');
+      for (const w of workersMade.slice(0, 3)) expect(w.terminated).toBeGreaterThanOrEqual(1);
+      expect(workersMade).toHaveLength(6); // a fresh pool for b and c
+    });
+
+    it('an error reply to measure from one worker fails the kernel without waiting for the others', async () => {
+      const { run } = start(
+        { kernels: defs, size: 'smoke', workers: 3 },
+        {
+          override: (m, w) => {
+            if (m.type !== 'measure' || m.id !== 0 || m.group.count !== 3 || w.number > 2) return undefined;
+            return w.number === 2
+              ? { type: 'error', id: m.id, message: 'another worker failed' }
+              : 'hang';
+          },
+        },
+      );
+      const outcomes = await run.done;
+      expect(outcomes.map((o) => o.valid)).toEqual([false, true, true]);
+      expect(outcomes[0]!.error).toBe('another worker failed');
+    });
+
+    it('a crash of one worker while the rest hang rejects that kernel at once', async () => {
+      const { run } = start(
+        { kernels: defs, size: 'smoke', workers: 3 },
+        {
+          override: (m, w) => {
+            if (m.type !== 'measure' || m.id !== 1 || m.group.count !== 3 || w.number > 2) return undefined;
+            if (w.number === 0) {
+              queueMicrotask(() => w.crash('Uncaught RuntimeError: unreachable'));
+            }
+            return 'hang';
+          },
+        },
+      );
+      const outcomes = await run.done;
+      expect(outcomes.map((o) => o.valid)).toEqual([true, false, true]);
+      expect(outcomes[1]!.error).toMatch(/unreachable/);
+    });
+
+    it('an init error from one worker rejects the run without waiting for the others', async () => {
+      const { run, workersMade } = start(
+        { kernels: defs, size: 'smoke', workers: 3 },
+        {
+          override: (m, w) =>
+            m.type === 'init'
+              ? w.number === 1
+                ? { type: 'error', message: 'kernel ABI mismatch: module has 3, page expects 4' }
+                : 'hang'
+              : undefined,
+        },
+      );
+      await expect(run.done).rejects.toThrow(/worker init failed: kernel ABI mismatch/);
+      expect(workersMade).toHaveLength(3);
+      for (const w of workersMade) expect(w.terminated).toBeGreaterThanOrEqual(1);
+    });
+
+    it('a crash during init is fatal and the pool is not rebuilt per kernel', async () => {
+      const { run, workersMade } = start(
+        { kernels: defs, size: 'smoke', workers: 2 },
+        {
+          override: (m, w) => {
+            if (m.type === 'init') {
+              queueMicrotask(() => w.crash('SyntaxError: bad module'));
+              return 'hang';
+            }
+            return undefined;
+          },
+        },
+      );
+      const r = await settle(run.done);
+      expect(r.ok).toBe(false);
+      expect((r as { e: Error }).e.message).toMatch(/worker init failed: .*bad module/);
+      expect(workersMade).toHaveLength(2);
     });
   });
 

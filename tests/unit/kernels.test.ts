@@ -236,8 +236,8 @@ describe.skipIf(process.env['BENCH_STANDARD'] !== '1')('CPU kernels at standard 
 const withMulti = cpuKernels.filter((d) => d.multi !== undefined);
 
 describe('CPU kernels at their all-cores (`multi`) size', () => {
-  it('at least one kernel defines a multi size', () => {
-    expect(withMulti.length).toBeGreaterThan(0);
+  it('every CPU kernel defines a multi size (one wasm instance per core must stay small)', () => {
+    expect(withMulti.map((d) => d.id)).toEqual(cpuKernels.map((d) => d.id));
   });
 
   it.each(withMulti.map((k) => [k.id, k] as const))('%s', (_id, def) => {

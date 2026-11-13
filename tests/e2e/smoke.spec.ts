@@ -246,6 +246,58 @@ test.describe('M2 all cores', () => {
     await expect(page.getByTestId('run')).toBeEnabled();
   });
 
+  test('a typed worker count of 2.5 becomes 2 on blur', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('component-cpu-multi').check();
+    const workers = page.getByTestId('workers');
+    await workers.fill('2.5');
+    await expect(page.getByTestId('run')).toBeEnabled(); // usable as typed: it will run with 2
+    await workers.blur();
+    await expect(workers).toHaveValue('2');
+    await expect(page.getByTestId('run')).toBeEnabled();
+  });
+
+  test('a worker count above the cap is clamped to 2 x logical cores on blur', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('component-cpu-multi').check();
+    const max = (await page.evaluate(() => navigator.hardwareConcurrency || 1)) * 2;
+    const workers = page.getByTestId('workers');
+    await workers.fill('99999');
+    await workers.blur();
+    await expect(workers).toHaveValue(String(max));
+  });
+
+  test('a worker count of 0 disables Run while cpu-multi is checked, not otherwise', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('component-cpu-multi').check();
+    const workers = page.getByTestId('workers');
+    await workers.fill('0');
+    await workers.blur();
+    await expect(page.getByTestId('run')).toBeDisabled();
+    await workers.fill('-3');
+    await workers.blur();
+    await expect(page.getByTestId('run')).toBeDisabled();
+    // Unchecking cpu-multi hides the input and the count no longer matters.
+    await page.getByTestId('component-cpu-multi').uncheck();
+    await expect(page.getByTestId('run')).toBeEnabled();
+    // The bad count is still there when cpu-multi comes back.
+    await page.getByTestId('component-cpu-multi').check();
+    await expect(page.getByTestId('run')).toBeDisabled();
+    await page.getByTestId('workers').fill('1');
+    await expect(page.getByTestId('run')).toBeEnabled();
+  });
+
+  test('a run with a typed 2.5 uses 2 workers', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('component-cpu-multi').check();
+    await page.getByTestId('component-cpu-single').uncheck();
+    await page.getByTestId('workers').fill('2.5'); // no blur: the run itself must truncate
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    await expect(page.getByTestId('multi-row-sha256')).toContainText('2 workers');
+    await expect(page.getByTestId('multi-row-sha256')).not.toContainText('2.5');
+  });
+
   test('smoke run of cpu-multi with 2 workers: 11 valid rows and no single-core table', async ({ page }) => {
     await page.goto('/?smoke');
     await onlyMulti(page);
