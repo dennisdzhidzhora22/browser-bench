@@ -163,11 +163,11 @@ All modes:
    after 3 s / 8 s of extra sampling. Results use those fastest samples: slow samples are
    mostly interference (another process, a slow core on hybrid CPUs, a clock dip). Report
    median, min, max and spread of them. A spread above 10% marks the row **noisy**.
+5. No `postMessage`, no allocation and no logging inside a timed region. Results are posted
+   once per kernel, after timing ends.
 6. The page compiles the wasm module once and sends it to workers. Each worker busy-spins for
    0.5 s before its first kernel, so the OS moves it to a fast core and raises the clock.
 7. If the tab is hidden at any point while a kernel runs, that kernel's result is discarded.
-5. No `postMessage`, no allocation and no logging inside a timed region. Results are posted
-   once per kernel, after timing ends.
 
 ## 6. Scoring
 
