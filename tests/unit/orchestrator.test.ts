@@ -13,6 +13,7 @@ import {
 } from '../../src/lib/harness/orchestrator.ts';
 import type {
   FromWorker,
+  GpuInit,
   InitRequest,
   RunRequest,
   RunResult,
@@ -187,6 +188,23 @@ describe('resultToOutcome', () => {
       expect(o.noisy).toBe(false);
     });
 
+    it('short: true (GPU rep cap hit) is noisy even when the spread is tiny, and stays valid', () => {
+      const o = quick(fakeDef('k'), result({ times: Float64Array.of(100, 100, 100), short: true }));
+      expect(o.stats!.spread).toBe(0);
+      expect(o.noisy).toBe(true);
+      expect(o.checksumOk).toBe(true);
+      expect(o.valid).toBe(true);
+      expect(o.error).toBeUndefined();
+    });
+
+    it('without short, noisy follows the spread alone (short: false or absent)', () => {
+      const tight = Float64Array.of(100, 100, 100);
+      expect(quick(fakeDef('k'), result({ times: tight })).noisy).toBe(false);
+      expect(quick(fakeDef('k'), result({ times: tight, short: false })).noisy).toBe(false);
+      const wide = Float64Array.of(100, 110, 120);
+      expect(quick(fakeDef('k'), result({ times: wide, short: false })).noisy).toBe(true);
+    });
+
     it('flips between a 9% and an 11% spread', () => {
       // median 100: spread (104.5 - 95.5) / 100 = 9 %, (105.5 - 94.5) / 100 = 11 %
       expect(quick(fakeDef('k'), result({ times: Float64Array.of(95.5, 100, 104.5) })).noisy).toBe(false);
@@ -347,6 +365,59 @@ describe('startRun', () => {
         makeWorker: () => w as unknown as Worker,
       }).done;
       expect(w.inits[0]!.spinMs).toBe(SPIN_MS);
+    });
+
+    describe('GPU runs (opts.gpu)', () => {
+      const gpu: GpuInit = { preference: 'low-power', api: 'webgl2' };
+
+      it('does not call loadModule; init has no module but carries gpu unchanged', async () => {
+        const w = new FakeWorker(wellBehaved(defs));
+        let loads = 0;
+        await start(w, {
+          kernels: [defs[0]!],
+          size: 'smoke',
+          mode: 'quick',
+          gpu,
+          loadModule: () => {
+            loads++;
+            return Promise.resolve(FAKE_MODULE);
+          },
+        }).done;
+        expect(loads).toBe(0);
+        expect(w.inits).toHaveLength(1);
+        expect('module' in w.inits[0]!).toBe(false);
+        expect(w.inits[0]!.gpu).toEqual(gpu);
+      });
+
+      it('a loadModule that would reject does not matter for a GPU run', async () => {
+        const w = new FakeWorker(wellBehaved(defs));
+        const outcomes = await start(w, {
+          kernels: [defs[0]!],
+          size: 'smoke',
+          mode: 'quick',
+          gpu,
+          loadModule: () => Promise.reject(new Error('should not be called')),
+        }).done;
+        expect(outcomes[0]!.valid).toBe(true);
+      });
+
+      it('without gpu, loadModule is called once and the module is sent with no gpu field', async () => {
+        const w = new FakeWorker(wellBehaved(defs));
+        let loads = 0;
+        const mod = { id: 'cpu-module' } as unknown as WebAssembly.Module;
+        await start(w, {
+          kernels: [defs[0]!],
+          size: 'smoke',
+          mode: 'quick',
+          loadModule: () => {
+            loads++;
+            return Promise.resolve(mod);
+          },
+        }).done;
+        expect(loads).toBe(1);
+        expect(w.inits[0]!.module).toBe(mod);
+        expect('gpu' in w.inits[0]!).toBe(false);
+      });
     });
 
     it('sends init exactly once, before any run', async () => {

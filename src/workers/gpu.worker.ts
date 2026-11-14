@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 // GPU benchmark worker. Same init/run protocol as runner.worker.ts, but it
 // drives WebGPU (or WebGL2 for the fallback test) instead of wasm kernels.
-// The `module` in the init message is ignored.
+// The page sends no kernel module, only `gpu` (preference and planned API).
 
 import { gpuFactories, isSoftware } from '../lib/bench/gpu/index.ts';
 import type { GpuContext, GpuKernel } from '../lib/bench/gpu/types.ts';
@@ -79,6 +79,7 @@ async function run(c: GpuContext, req: RunRequest): Promise<void> {
   const factory = gpuFactories[req.kernel];
   if (!factory) throw new Error(`GPU test "${req.kernel}" not found`);
   const k = factory();
+  gpuError = undefined; // per test: an earlier test's error must not fail this one
   try {
     const p0 = performance.now();
     await k.prepare(c, req.seed, req.size);
@@ -117,6 +118,9 @@ async function run(c: GpuContext, req: RunRequest): Promise<void> {
     }
 
     const check = await k.validate();
+    // Errors raised by validate()'s own submits belong to this test, too.
+    await c.device?.queue.onSubmittedWorkDone();
+    if (gpuError) throw new Error(gpuError);
     const taken = times.slice(0, n);
     reply(
       {

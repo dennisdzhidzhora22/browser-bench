@@ -10,8 +10,9 @@
 // its 4x4 block. n must be a multiple of 64. One iteration = one dispatch;
 // work = 2 n^3 flops.
 //
-// Validation: read back C and compare 32 seeded-random entries with CPU f64
-// dot products of the same f32 inputs (see TOLERANCE).
+// Validation: read back C and compare 512 seeded-random entries, the four
+// corners, one full row and one full column with CPU f64 dot products of the
+// same f32 inputs (see TOLERANCE).
 
 import type { KernelDef } from '../types.ts';
 import { GPU_TARGET_MS, GPU_VALID, type GpuContext, type GpuKernel } from './types.ts';

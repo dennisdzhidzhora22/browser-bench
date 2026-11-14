@@ -230,8 +230,10 @@ export function createGpuNbody(): GpuKernel {
       const dev = device!;
       const bytes = n * 16;
 
-      // Timed state: finite, masses unchanged, and it actually moved (a timed
-      // submit that failed validation would leave the initial state in place).
+      // Timed state: finite, masses unchanged, and it moved at all. This only
+      // catches total failure (warm-up steps also move the bodies); timed
+      // submits that fail validation are caught by the worker's
+      // uncapturederror listener.
       const cur = new Float32Array(await readBack(dev, pos[parity]!, bytes));
       let moved = 0;
       for (let i = 0; i < n; i++) {

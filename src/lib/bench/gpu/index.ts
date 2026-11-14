@@ -60,7 +60,7 @@ function webgpuLabel(a: GPUAdapter): string {
 /** True for CPU-emulated adapters (SwiftShader, WARP). Field moved between Chrome versions. */
 export function isSoftware(a: GPUAdapter): boolean {
   const x = a as GPUAdapter & { isFallbackAdapter?: boolean; info: { isFallbackAdapter?: boolean } };
-  return Boolean(x.info.isFallbackAdapter ?? x.isFallbackAdapter);
+  return Boolean(x.info.isFallbackAdapter || x.isFallbackAdapter);
 }
 
 function webglLabel(pref: GpuPreference): string | undefined {

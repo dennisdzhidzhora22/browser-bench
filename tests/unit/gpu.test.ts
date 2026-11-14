@@ -7,6 +7,7 @@ import {
   gpuFactories,
   gpuKernels,
   isFallback,
+  isSoftware,
   planGpus,
   webgpuKernels,
   type GpuChoice,
@@ -364,6 +365,31 @@ describe('planGpus (faked browser)', () => {
     expect(calls).toEqual(['high-performance']);
   });
 
+  it('a software adapter (info.isFallbackAdapter) gets the " (software)" label suffix', async () => {
+    vi.stubGlobal('navigator', {
+      gpu: { requestAdapter: async () => ({ info: { ...intel, isFallbackAdapter: true } }) },
+    });
+    const plan = await planGpus('high-performance');
+    expect(plan.api).toBe('webgpu');
+    expect(plan.targets).toEqual([{ preference: 'high-performance', label: 'intel · xe · 46a6 (software)' }]);
+  });
+
+  it('a software adapter flagged only on the adapter itself is labelled too; hardware is not', async () => {
+    vi.stubGlobal('navigator', {
+      gpu: {
+        requestAdapter: async (o: { powerPreference: Pref }) =>
+          o.powerPreference === 'high-performance'
+            ? { info: nvidia }
+            : { info: intel, isFallbackAdapter: true },
+      },
+    });
+    const plan = await planGpus('both');
+    expect(plan.targets.map((t) => t.label)).toEqual([
+      'nvidia · ada · 2684 · RTX 4090',
+      'intel · xe · 46a6 (software)',
+    ]);
+  });
+
   it('webgpu, power-saving: asks only for low-power, drops empty info fields', async () => {
     const calls: Pref[] = [];
     fakeWebGpu({ 'high-performance': nvidia, 'low-power': intel }, calls);
@@ -514,5 +540,29 @@ describe('resultToOutcome for GPU results', () => {
     expect(o.valid).toBe(false);
     expect(o.hidden).toBe(true);
     expect(o.error).toMatch(/hidden/);
+  });
+});
+
+describe('isSoftware', () => {
+  const adapter = (top: boolean | undefined, info: boolean | undefined) =>
+    ({
+      ...(top === undefined ? {} : { isFallbackAdapter: top }),
+      info: info === undefined ? {} : { isFallbackAdapter: info },
+    }) as unknown as GPUAdapter;
+
+  it('is true when adapter.info.isFallbackAdapter is true', () => {
+    expect(isSoftware(adapter(undefined, true))).toBe(true);
+  });
+  it('is true when only adapter.isFallbackAdapter is true (older Chrome)', () => {
+    expect(isSoftware(adapter(true, undefined))).toBe(true);
+  });
+  it('is true when both are true', () => {
+    expect(isSoftware(adapter(true, true))).toBe(true);
+  });
+  it('is false when neither is set, or the set ones are false', () => {
+    expect(isSoftware(adapter(undefined, undefined))).toBe(false);
+    expect(isSoftware(adapter(false, false))).toBe(false);
+    expect(isSoftware(adapter(false, undefined))).toBe(false);
+    expect(isSoftware(adapter(undefined, false))).toBe(false);
   });
 });
