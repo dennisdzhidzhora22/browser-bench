@@ -5,10 +5,21 @@
   import {
     Cancelled,
     createGpuWorker,
+    createStorageWorker,
     startRun,
     type KernelOutcome,
     type RunMode,
+    type RunOptions,
   } from '../lib/harness/orchestrator.ts';
+  import {
+    newRunDir,
+    planStorage,
+    removeRunDir,
+    storageDefsFor,
+    sweepRunDirs,
+    type StoragePlan,
+  } from '../lib/bench/storage/index.ts';
+  import StorageResults from './StorageResults.svelte';
   import {
     fallbackKernels,
     planGpus,
@@ -18,7 +29,6 @@
     type GpuPlan,
     type GpuTarget,
   } from '../lib/bench/gpu/index.ts';
-  import type { GpuPreference } from '../lib/harness/protocol.ts';
   import GpuResults from './GpuResults.svelte';
   import {
     clampWorkers,
@@ -66,7 +76,16 @@
   let gpuRuns: { target: GpuTarget; info: Record<string, string>; outcomes: KernelOutcome[] }[] =
     $state([]);
   let gpuPlan: GpuPlan | undefined = $state();
+  let storagePlan: StoragePlan | undefined = $state();
+  let storageOutcomes: KernelOutcome[] = $state([]);
+  let storageError: string | undefined = $state();
+  /** True once this run's OPFS directory is gone; false if removal kept failing. */
+  let storageCleanup: boolean | undefined = $state();
   let active: { cancel(): void } | undefined;
+
+  // Test files from runs that crashed or were closed mid-run (SPEC 3.5).
+  // Before any run can start, so it never overlaps a measurement.
+  if (isolated) void sweepRunDirs();
   let cancelRequested = false;
 
   /** Kernels run on several workers: the all-cores CPU test, and all-cores copy. */
@@ -79,7 +98,9 @@
   const stepsFor = (id: ComponentId, all: readonly KernelDef[], p: GpuPlan | undefined) =>
     id === 'gpu'
       ? gpuKernelsFor(p?.api).length * (p?.targets.length ?? 0)
-      : all.length + multiKernels(id).length;
+      : id === 'storage' && storagePlan?.ok === false
+        ? 0
+        : all.length + multiKernels(id).length;
   const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
   const anySelected = $derived(toRun.length > 0);
   const needsWorkers = $derived(selected['cpu-multi'] || selected.memory);
@@ -112,10 +133,16 @@
     memMulti = [];
     gpuRuns = [];
     gpuPlan = undefined;
+    storagePlan = undefined;
+    storageOutcomes = [];
+    storageError = undefined;
+    storageCleanup = undefined;
     cancelRequested = false;
     phase = { kind: 'running', index: 0, total: 0, current: 'starting' };
-    // Before any measurement: the API and the distinct GPUs decide the GPU steps.
+    // Before any measurement: the API and the distinct GPUs decide the GPU steps,
+    // and the quota left decides the storage file size.
     if (chosen.some((c) => c.id === 'gpu')) gpuPlan = await planGpus(gpuChoice);
+    if (chosen.some((c) => c.id === 'storage')) storagePlan = await planStorage(size);
     const total = chosen.reduce((n, c) => n + stepsFor(c.id, c.kernels, gpuPlan), 0);
     phase = { kind: 'running', index: 0, total, current: 'starting' };
     let offset = 0;
@@ -130,7 +157,7 @@
       name: string,
       kernels: readonly KernelDef[],
       out: KernelOutcome[],
-      gpu?: { preference: GpuPreference; onReady: (info: Record<string, string>) => void },
+      extra: Partial<RunOptions> = {},
     ) => {
       if (kernels.length === 0) return;
       const r = startRun({
@@ -139,13 +166,7 @@
         mode,
         beforeKernel: hook(name),
         afterKernel: (_i, o) => void out.push(o),
-        ...(gpu
-          ? {
-              makeWorker: createGpuWorker,
-              gpu: { preference: gpu.preference, api: gpuPlan?.api === 'webgl2' ? 'webgl2' : 'webgpu' },
-              onReady: gpu.onReady,
-            }
-          : {}),
+        ...extra,
       });
       active = r;
       await r.done;
@@ -165,6 +186,26 @@
       await r.done;
       offset += kernels.length;
     };
+    /**
+     * All files go in one fresh OPFS directory, removed afterwards on every
+     * path: done, failed or cancelled (Worker.terminate() gives the worker no
+     * chance to clean up). A worker failure stops only the storage tests.
+     */
+    const runStorage = async (name: string, fileBytes: number) => {
+      const dir = newRunDir();
+      try {
+        await single(name, storageDefsFor(size, fileBytes), storageOutcomes, {
+          makeWorker: createStorageWorker,
+          storage: { dir },
+        });
+      } catch (err) {
+        if (err instanceof Cancelled || cancelRequested) throw err;
+        storageError = err instanceof Error ? err.message : String(err);
+      } finally {
+        if (phase.kind === 'running') phase = { ...phase, current: `${name}: removing test files` };
+        storageCleanup = await removeRunDir(dir);
+      }
+    };
     try {
       for (const c of chosen) {
         if (cancelRequested) throw new Cancelled();
@@ -179,10 +220,17 @@
             gpuRuns.push({ target, info: {}, outcomes: [] });
             const entry = gpuRuns[gpuRuns.length - 1]!;
             await single(`GPU (${target.label})`, gpuKernelsFor(gpuPlan?.api), entry.outcomes, {
-              preference: target.preference,
+              makeWorker: createGpuWorker,
+              gpu: {
+                preference: target.preference,
+                api: gpuPlan?.api === 'webgl2' ? 'webgl2' : 'webgpu',
+              },
               onReady: (info) => (entry.info = info),
             });
           }
+        } else if (c.id === 'storage') {
+          if (!storagePlan?.ok) continue; // StorageResults shows why
+          await runStorage(c.name, storagePlan.fileBytes);
         } else await single(c.name, c.kernels, outcomes);
       }
       phase = { kind: 'done' };
@@ -347,6 +395,16 @@
       </h3>
       <GpuResults outcomes={g.outcomes} info={g.info} api={gpuPlan.api} />
     {/each}
+  {/if}
+
+  {#if storagePlan}
+    <h2>Storage</h2>
+    <StorageResults
+      outcomes={storageOutcomes}
+      plan={storagePlan}
+      error={storageError}
+      cleanup={storageCleanup}
+    />
   {/if}
 
   <p class="muted note">

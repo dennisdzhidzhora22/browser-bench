@@ -10,6 +10,7 @@ import type {
   FromWorker,
   GpuInit,
   InitRequest,
+  StorageInit,
   RunRequest,
   RunResult,
 } from './protocol.ts';
@@ -69,6 +70,8 @@ export interface RunOptions {
   onReady?: (info: Record<string, string>) => void;
   /** GPU runs: which GPU and API the worker should use. No kernel module is loaded. */
   gpu?: GpuInit;
+  /** Storage runs: the OPFS directory for this run. No kernel module is loaded. */
+  storage?: StorageInit;
   /** Injection points for tests. */
   makeWorker?: () => Worker;
   loadModule?: () => Promise<WebAssembly.Module>;
@@ -95,6 +98,13 @@ export function createWorker(): Worker {
 /** Worker for GPU tests (WebGPU, or WebGL2 fallback). Same protocol. */
 export function createGpuWorker(): Worker {
   return new Worker(new URL('../../workers/gpu.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+}
+
+/** Worker for storage tests (OPFS). Same protocol. */
+export function createStorageWorker(): Worker {
+  return new Worker(new URL('../../workers/storage.worker.ts', import.meta.url), {
     type: 'module',
   });
 }
@@ -152,14 +162,15 @@ export function startRun(opts: RunOptions): Run {
 
   const done = (async () => {
     try {
-      // GPU runs need no wasm: skip fetching and posting it (SPEC 7).
-      const module = opts.gpu ? undefined : await (opts.loadModule ?? loadKernelModule)();
+      // GPU and storage runs need no wasm: skip fetching and posting it (SPEC 7).
+      const module = opts.gpu || opts.storage ? undefined : await (opts.loadModule ?? loadKernelModule)();
       if (cancelled) throw new Cancelled();
       const ready = await send({
         type: 'init',
         ...(module ? { module } : {}),
         spinMs: opts.spinMs ?? SPIN_MS,
         ...(opts.gpu ? { gpu: opts.gpu } : {}),
+        ...(opts.storage ? { storage: opts.storage } : {}),
       });
       if (ready.type === 'error') throw new Error(`worker init failed: ${ready.message}`);
       if (ready.type === 'ready') opts.onReady?.(ready.info ?? {});

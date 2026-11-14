@@ -12,7 +12,7 @@
 
 export interface InitRequest {
   type: 'init';
-  /** Kernel module (CPU worker). The GPU worker gets none. */
+  /** Kernel module (CPU worker). The GPU and storage workers get none. */
   module?: WebAssembly.Module;
   /**
    * Busy-spin this long before replying `ready`, so the OS moves the thread
@@ -21,6 +21,13 @@ export interface InitRequest {
   spinMs: number;
   /** GPU worker only: which GPU and which API the page planned for. */
   gpu?: GpuInit;
+  /** Storage worker only: the OPFS directory this run's files go in. */
+  storage?: StorageInit;
+}
+
+export interface StorageInit {
+  /** Unique per run, starts with DIR_PREFIX; the page deletes it after the run. */
+  dir: string;
 }
 
 export interface GpuInit {
@@ -53,7 +60,7 @@ export interface RunRequest {
   /** Busy-spin after prepare, before warm-up. Optional; default 0. */
   spinMs?: number;
   /**
-   * GPU worker only: repeat the test to fill about this many ms per sample.
+   * GPU and storage workers: repeat the test to fill about this many ms per sample.
    * Absent or 0 = one repetition per sample.
    */
   targetMs?: number;
@@ -184,11 +191,11 @@ export interface RunResult {
   prepareMs: number;
   /** Milliseconds per sample, in the order taken. Transferred, not copied. */
   times: Float64Array;
-  /** Repetitions of the test per sample (GPU). Absent = 1. */
+  /** Repetitions of the test per sample (GPU, storage). Absent = 1. */
   reps?: number;
-  /** GPU: the rep cap was hit and samples are well under targetMs (flagged noisy). */
+  /** GPU, storage: the rep cap was hit and samples are well under targetMs (flagged noisy). */
   short?: boolean;
-  /** Why validation failed, when it did (GPU). */
+  /** Why validation failed, when it did (GPU, storage). */
   detail?: string;
 }
 

@@ -171,6 +171,20 @@ Check `navigator.storage.estimate()` first and scale the file size to fit. Alway
 files, including after errors and cancelled runs. The results page notes that the OS file
 cache inflates read numbers and that the browser sits between the test and the disk.
 
+How it works (M5): storage tests run in `storage.worker.ts` on one file of 256 MiB (smoke:
+2 MiB), scaled down to a quarter of the quota left; below 16 MiB the page reports low quota.
+256 MiB keeps a Quick run of all four tests to about 15 s; a file large enough to defeat the
+OS cache would have to exceed RAM, so reads are cache-assisted by design (R4). Each test
+repeats its work to fill about 250 ms per sample (calibrated once). Sequential tests move
+1 MiB chunks, one pass per repetition; random tests do 256 block-aligned 4 KiB operations
+per repetition at seeded offsets; both write tests `flush()` once per repetition. Every 4 KiB
+block carries its own index and a write-pass number, so instead of checksums each test checks
+after timing what it read (buffers are cleared before each sample) or reads back what it
+wrote. Each run's files live in one directory named `bb-storage-…`. The page deletes it after
+every run, including errors and cancel (`Worker.terminate()`), retrying for up to 15 s while
+the terminated worker's file lock clears (measured up to about 3 s), and sweeps leftover
+directories at page load.
+
 ### 3.6 System info (not scored)
 
 User agent, browser version, logical core count, `deviceMemory` (coarse), GPU adapter info,
