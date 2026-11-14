@@ -140,7 +140,11 @@
         beforeKernel: hook(name),
         afterKernel: (_i, o) => void out.push(o),
         ...(gpu
-          ? { makeWorker: createGpuWorker, gpuPreference: gpu.preference, onReady: gpu.onReady }
+          ? {
+              makeWorker: createGpuWorker,
+              gpu: { preference: gpu.preference, api: gpuPlan?.api === 'webgl2' ? 'webgl2' : 'webgpu' },
+              onReady: gpu.onReady,
+            }
           : {}),
       });
       active = r;
@@ -318,7 +322,7 @@
     {#if gpuPlan.sameGpu}
       <div class="muted" data-testid="gpu-same">
         <p>
-          Both choices gave the same GPU, so it was tested once. If this PC has a second GPU,
+          Both choices gave what the browser reports as the same GPU, so it was tested once. If this PC has a second GPU,
           the browser chose not to use it: web pages can only ask, and Chrome on Windows uses one
           GPU for everything. To test the other GPU:
         </p>

@@ -26,8 +26,9 @@ export const gpuFactories: Readonly<Record<string, GpuKernelFactory>> = {
   gpu_fragment_gl: createGpuFragmentGl,
 };
 
+/** By id, not identity: defs held in Svelte $state are proxies. */
 export function isFallback(def: KernelDef): boolean {
-  return fallbackKernels.includes(def);
+  return fallbackKernels.some((k) => k.id === def.id);
 }
 
 export type GpuApi = 'webgpu' | 'webgl2' | 'none';
@@ -51,7 +52,15 @@ export interface GpuPlan {
 
 function webgpuLabel(a: GPUAdapter): string {
   const i = a.info;
-  return [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join(' · ') || 'GPU';
+  const label =
+    [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join(' · ') || 'GPU';
+  return isSoftware(a) ? `${label} (software)` : label;
+}
+
+/** True for CPU-emulated adapters (SwiftShader, WARP). Field moved between Chrome versions. */
+export function isSoftware(a: GPUAdapter): boolean {
+  const x = a as GPUAdapter & { isFallbackAdapter?: boolean; info: { isFallbackAdapter?: boolean } };
+  return Boolean(x.info.isFallbackAdapter ?? x.isFallbackAdapter);
 }
 
 function webglLabel(pref: GpuPreference): string | undefined {

@@ -127,7 +127,7 @@ WebGPU first.
 |---|---|
 | Compute shader: N-body | G interactions/s |
 | Compute shader: matrix multiply | GFLOP/s |
-| Render: many draw calls, offscreen target | draws/s |
+| Render: many draw calls, offscreen target | K draws/s |
 | Render: heavy fragment shader (ray-march), offscreen target | Mpixels/s |
 
 Rules: render to an offscreen texture, never to a presented canvas, so results are not capped

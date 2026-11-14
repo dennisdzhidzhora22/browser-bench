@@ -166,7 +166,8 @@ function spin(m: KernelModule, ms: number): void {
 }
 
 async function init(req: InitRequest): Promise<void> {
-  const m = mod ?? (await instantiateKernels(req.module));
+  if (!mod && !req.module) throw new Error('init without a kernel module');
+  const m = mod ?? (await instantiateKernels(req.module!));
   mod = m;
   spin(m, req.spinMs);
   reply({ type: 'ready', abi: m.abi_version() });

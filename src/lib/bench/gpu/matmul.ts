@@ -31,7 +31,7 @@ export const gpuMatmul: KernelDef = {
 
 const NAME = 'gpu_matmul';
 const BLOCK = 64;
-const SAMPLES = 32;
+const SAMPLES = 512;
 
 /**
  * Relative tolerance per sampled entry. Each entry is a sum of n positive f32
@@ -188,11 +188,17 @@ export function createGpuMatmul(): GpuKernel {
 
     async validate(): Promise<{ ok: boolean; detail?: string }> {
       const c = new Float32Array(await readBack(device!, cBuf!, n * n * 4));
+      // SAMPLES seeded random entries, the four corners, one full row and one
+      // full column (so a bug confined to a lane, a strip or the last block
+      // row/column cannot slip through). About (SAMPLES + 2n) * n multiply-adds.
       const r = rng(seed0 ^ 0x5bd1e995);
+      const row = Math.floor(r() * n);
+      const col = Math.floor(r() * n);
+      const cells: [number, number][] = [[0, 0], [0, n - 1], [n - 1, 0], [n - 1, n - 1]];
+      for (let s = 0; s < SAMPLES; s++) cells.push([Math.floor(r() * n), Math.floor(r() * n)]);
+      for (let x = 0; x < n; x++) cells.push([row, x], [x, col]);
       let worst = 0;
-      for (let s = 0; s < SAMPLES; s++) {
-        const i = Math.floor(r() * n);
-        const j = Math.floor(r() * n);
+      for (const [i, j] of cells) {
         let want = 0;
         for (let k = 0; k < n; k++) want += a[i * n + k]! * b[k * n + j]!;
         const got = c[i * n + j]!;

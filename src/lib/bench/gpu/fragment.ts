@@ -97,16 +97,18 @@ export function createGpuFragment(): GpuKernel {
     },
 
     async runBatch(reps: number): Promise<void> {
+      // One encoder and one submit for the whole batch (one render pass per
+      // frame), so per-submit CPU cost does not leak into the pixel rate.
       const dev = device!;
+      const enc = dev.createCommandEncoder();
       for (let r = 0; r < reps; r++) {
-        const enc = dev.createCommandEncoder();
         const rp = enc.beginRenderPass(pass!);
         rp.setPipeline(pipeline!);
         rp.setBindGroup(0, bindGroup!);
         rp.draw(3);
         rp.end();
-        dev.queue.submit([enc.finish()]);
       }
+      dev.queue.submit([enc.finish()]);
       await dev.queue.onSubmittedWorkDone();
     },
 

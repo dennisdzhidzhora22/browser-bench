@@ -230,13 +230,19 @@ export function createGpuNbody(): GpuKernel {
       const dev = device!;
       const bytes = n * 16;
 
-      // Timed state: finite, masses unchanged.
+      // Timed state: finite, masses unchanged, and it actually moved (a timed
+      // submit that failed validation would leave the initial state in place).
       const cur = new Float32Array(await readBack(dev, pos[parity]!, bytes));
+      let moved = 0;
       for (let i = 0; i < n; i++) {
         const o = i * 4;
         if (![cur[o]!, cur[o + 1]!, cur[o + 2]!].every(Number.isFinite) || cur[o + 3] !== pos0[o + 3]) {
           return { ok: false, detail: `body ${i} after the timed steps is not finite or lost its mass` };
         }
+        if (cur[o] !== pos0[o] || cur[o + 1] !== pos0[o + 1] || cur[o + 2] !== pos0[o + 2]) moved++;
+      }
+      if (moved < n / 2) {
+        return { ok: false, detail: `only ${moved} of ${n} bodies moved during the timed steps` };
       }
 
       // One step from the initial state, compared with CPU f64.
@@ -253,8 +259,12 @@ export function createGpuNbody(): GpuKernel {
       const eps2 = Math.fround(EPS2);
       const dt = Math.fround(DT);
       let worst = 0;
+      // Seeded random bodies (so every lane of a workgroup can be hit), plus
+      // body 0 and the last body (its tile is partly padding).
+      const pick = rng(0x9e3779b9);
       for (let s = 0; s < SAMPLES; s++) {
-        const i = Math.floor(((s + 0.5) * n) / SAMPLES);
+        const i =
+          s === 0 ? 0 : s === 1 ? n - 1 : Math.min(n - 1, Math.floor(pick() * n));
         const o = i * 4;
         const px = pos0[o]!, py = pos0[o + 1]!, pz = pos0[o + 2]!;
         let ax = 0, ay = 0, az = 0, sum = 0;

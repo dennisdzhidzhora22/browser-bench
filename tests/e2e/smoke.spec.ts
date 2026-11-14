@@ -52,12 +52,14 @@ test.describe('M1 smoke', () => {
     const memory = page.getByTestId('component-memory');
     await expect(memory).toBeEnabled();
     await expect(memory).not.toBeChecked();
-    // cpu-multi became selectable in M2 and memory in M3 (see 'M2 all cores' and 'M3 memory' below).
-    for (const id of ['gpu', 'storage']) {
-      const box = page.getByTestId(`component-${id}`);
-      await expect(box, id).toBeDisabled();
-      await expect(box, id).not.toBeChecked();
-    }
+    // cpu-multi became selectable in M2, memory in M3 and gpu in M4 (see 'M2 all cores', 'M3 memory'
+    // below and gpu.spec.ts).
+    const gpu = page.getByTestId('component-gpu');
+    await expect(gpu).toBeEnabled();
+    await expect(gpu).not.toBeChecked();
+    const storage = page.getByTestId('component-storage');
+    await expect(storage).toBeDisabled();
+    await expect(storage).not.toBeChecked();
     await expect(page.getByTestId('mode-quick')).toBeChecked();
     await expect(page.getByTestId('mode-full')).not.toBeChecked();
     await expect(page.getByTestId('run')).toBeEnabled();

@@ -12,14 +12,21 @@
 
 export interface InitRequest {
   type: 'init';
-  module: WebAssembly.Module;
+  /** Kernel module (CPU worker). The GPU worker gets none. */
+  module?: WebAssembly.Module;
   /**
    * Busy-spin this long before replying `ready`, so the OS moves the thread
    * to a fast core and raises its clock before the first measurement.
    */
   spinMs: number;
-  /** GPU worker only: which GPU to ask the browser for. Default 'high-performance'. */
-  gpuPreference?: GpuPreference;
+  /** GPU worker only: which GPU and which API the page planned for. */
+  gpu?: GpuInit;
+}
+
+export interface GpuInit {
+  preference: GpuPreference;
+  /** The API the page's plan chose; the worker uses this one or fails clearly. */
+  api: 'webgpu' | 'webgl2';
 }
 
 /** WebGPU / WebGL2 power preference. On dual-GPU PCs this usually picks dGPU vs iGPU. */
@@ -179,6 +186,8 @@ export interface RunResult {
   times: Float64Array;
   /** Repetitions of the test per sample (GPU). Absent = 1. */
   reps?: number;
+  /** GPU: the rep cap was hit and samples are well under targetMs (flagged noisy). */
+  short?: boolean;
   /** Why validation failed, when it did (GPU). */
   detail?: string;
 }
