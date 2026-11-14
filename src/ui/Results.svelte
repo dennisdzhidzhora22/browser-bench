@@ -1,7 +1,19 @@
 <script lang="ts">
+  import { defKey } from '../lib/bench/types.ts';
   import { NOISY_SPREAD, type KernelOutcome } from '../lib/harness/orchestrator.ts';
+  import type { Reference } from '../lib/scoring/score.ts';
 
-  let { outcomes }: { outcomes: KernelOutcome[] } = $props();
+  let {
+    outcomes,
+    refs = [],
+    prefix = '',
+  }: {
+    outcomes: KernelOutcome[];
+    /** Matching-version references; the column is hidden when empty. */
+    refs?: Reference[];
+    /** Component id, for reference keys `<component>/<defKey>`. */
+    prefix?: string;
+  } = $props();
 
   function fmt(n: number | undefined): string {
     if (n === undefined || !Number.isFinite(n)) return '—';
@@ -23,6 +35,7 @@
       <th>Test</th>
       <th class="r">Result</th>
       <th>Unit</th>
+      {#each refs as ref (ref.name)}<th class="r">{ref.name}</th>{/each}
       <th class="r">Median</th>
       <th class="r">Spread</th>
       <th>Check</th>
@@ -37,6 +50,9 @@
         </td>
         <td class="r num" data-testid="value">{o.valid ? fmt(o.throughput) : '—'}</td>
         <td>{o.def.unit}</td>
+        {#each refs as ref (ref.name)}
+          <td class="r num ref">{fmt(ref.results[`${prefix}/${defKey(o.def)}`])}</td>
+        {/each}
         <td class="r num">{o.stats ? `${o.stats.median.toFixed(1)} ms` : '—'}</td>
         <td class="r num" title={o.samples ? `${o.samples} samples taken` : ''}>
           {o.stats ? `${(o.stats.spread * 100).toFixed(1)} %` : '—'}
@@ -56,27 +72,3 @@
   </tbody>
 </table>
 
-<style>
-  table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-  th,
-  td {
-    padding: 0.3rem 0.6rem;
-    border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
-    text-align: left;
-    vertical-align: top;
-  }
-  .r {
-    text-align: right;
-  }
-  .muted {
-    display: block;
-    font-size: 0.85em;
-    opacity: 0.6;
-  }
-  .noisy td {
-    background: color-mix(in srgb, #d97706 12%, transparent);
-  }
-</style>

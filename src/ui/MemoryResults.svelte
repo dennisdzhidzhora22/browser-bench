@@ -1,14 +1,17 @@
 <script lang="ts">
   import { formatBytes, latencyNs } from '../lib/bench/memory/index.ts';
-  import { defKey } from '../lib/bench/types.ts';
+  import { defKey, type KernelDef } from '../lib/bench/types.ts';
   import type { MultiOutcome } from '../lib/harness/multi.ts';
   import type { KernelOutcome } from '../lib/harness/orchestrator.ts';
+  import type { Reference } from '../lib/scoring/score.ts';
 
   let {
     outcomes,
     multi,
     smoke = false,
-  }: { outcomes: KernelOutcome[]; multi: MultiOutcome[]; smoke?: boolean } = $props();
+    refs = [],
+  }: { outcomes: KernelOutcome[]; multi: MultiOutcome[]; smoke?: boolean; refs?: Reference[] } = $props();
+  const ref = (r: Reference, def: KernelDef) => r.results[`memory/${defKey(def)}`];
 
   const bandwidth = $derived(outcomes.filter((o) => o.def.id !== 'mem_latency'));
   const latency = $derived(
@@ -104,6 +107,7 @@
       <th>Test</th>
       <th class="r">Result</th>
       <th>Unit</th>
+      {#each refs as r (r.name)}<th class="r">{r.name}</th>{/each}
       <th class="r">Spread</th>
       <th>Check</th>
     </tr>
@@ -114,6 +118,7 @@
         <td>{o.def.name} <span class="muted">1 core · {o.def.stresses}</span></td>
         <td class="r num" data-testid="value">{o.valid ? fmt(o.throughput) : '—'}</td>
         <td>{o.def.unit}</td>
+        {#each refs as r (r.name)}<td class="r num">{fmt(ref(r, o.def))}</td>{/each}
         <td class="r num">{o.stats ? `${(o.stats.spread * 100).toFixed(1)} %` : '—'}</td>
         <td data-testid="checksum" data-ok={o.checksumOk} data-valid={o.valid}>{status(o)}</td>
       </tr>
@@ -130,6 +135,7 @@
         </td>
         <td class="r num" data-testid="value">{o.valid ? fmt(o.all?.throughput) : '—'}</td>
         <td>{o.def.unit}</td>
+        {#each refs as r (r.name)}<td class="r num">{fmt(ref(r, o.def))}</td>{/each}
         <td class="r num">{o.all ? `${(o.all.stats.spread * 100).toFixed(1)} %` : '—'}</td>
         <td data-testid="checksum" data-ok={o.checksumOk} data-valid={o.valid}>{status(o)}</td>
       </tr>
@@ -145,6 +151,7 @@
       <tr>
         <th>Size</th>
         <th class="r">ns per access</th>
+        {#each refs as r (r.name)}<th class="r">{r.name}</th>{/each}
         <th>Check</th>
       </tr>
     </thead>
@@ -153,6 +160,7 @@
         <tr data-testid="latency-row-{p.size}">
           <td>{formatBytes(p.size)}{smoke ? ' (smoke run: 4 KB)' : ''}</td>
           <td class="r num" data-testid="value">{fmt(p.ns, 2)}</td>
+          {#each refs as r (r.name)}<td class="r num">{fmt(ref(r, p.o.def), 2)}</td>{/each}
           <td data-testid="checksum" data-ok={p.o.checksumOk} data-valid={p.o.valid}>
             {status(p.o)}
           </td>
@@ -168,28 +176,6 @@
 {/if}
 
 <style>
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    margin-bottom: 0.75rem;
-  }
-  th,
-  td {
-    padding: 0.3rem 0.6rem;
-    border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
-    text-align: left;
-  }
-  .r {
-    text-align: right;
-  }
-  .muted {
-    font-size: 0.85em;
-    opacity: 0.6;
-  }
-  h3 {
-    font-size: 1rem;
-    margin: 1rem 0 0.4rem;
-  }
   .chart {
     display: block;
     width: 100%;

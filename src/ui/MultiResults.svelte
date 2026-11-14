@@ -1,8 +1,9 @@
 <script lang="ts">
   import { NOISY_SPREAD } from '../lib/harness/orchestrator.ts';
   import type { MultiOutcome } from '../lib/harness/multi.ts';
+  import type { Reference } from '../lib/scoring/score.ts';
 
-  let { outcomes }: { outcomes: MultiOutcome[] } = $props();
+  let { outcomes, refs = [] }: { outcomes: MultiOutcome[]; refs?: Reference[] } = $props();
 
   function fmt(n: number | undefined): string {
     if (n === undefined || !Number.isFinite(n)) return '—';
@@ -27,6 +28,7 @@
     <tr>
       <th>Test</th>
       <th class="r">All cores</th>
+      {#each refs as ref (ref.name)}<th class="r">{ref.name}</th>{/each}
       <th class="r">1 core</th>
       <th>Unit</th>
       <th class="r">Scaling</th>
@@ -42,6 +44,7 @@
           <span class="muted">{o.workers} workers</span>
         </td>
         <td class="r num" data-testid="value">{o.valid ? fmt(o.all?.throughput) : '—'}</td>
+        {#each refs as ref (ref.name)}<td class="r num ref">{fmt(ref.results[`cpu-multi/${o.def.id}`])}</td>{/each}
         <td class="r num">{o.valid ? fmt(o.single?.throughput) : '—'}</td>
         <td>{o.def.unit}</td>
         <td class="r num" data-testid="scaling" title="ideal = {o.workers}×">
@@ -75,27 +78,3 @@
   </tbody>
 </table>
 
-<style>
-  table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-  th,
-  td {
-    padding: 0.3rem 0.6rem;
-    border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
-    text-align: left;
-    vertical-align: top;
-  }
-  .r {
-    text-align: right;
-  }
-  .muted {
-    display: block;
-    font-size: 0.85em;
-    opacity: 0.6;
-  }
-  .noisy td {
-    background: color-mix(in srgb, #d97706 12%, transparent);
-  }
-</style>

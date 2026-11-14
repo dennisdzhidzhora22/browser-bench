@@ -41,6 +41,13 @@
   import MemoryResults from './MemoryResults.svelte';
   import MultiResults from './MultiResults.svelte';
   import Results from './Results.svelte';
+  import Points from './Points.svelte';
+  import History from './History.svelte';
+  import { collectSystemInfo } from '../lib/sysinfo/index.ts';
+  import { buildRecord, toView, type RunView } from '../lib/store/record.ts';
+  import { loadHistory, mergeRuns, saveHistory } from '../lib/store/history.ts';
+  import type { ComponentRecord, RunRecord } from '../lib/store/schema.ts';
+  import { excluded, refsFor } from '../lib/scoring/score.ts';
 
   const isolated = globalThis.crossOriginIsolated === true;
   const dev = import.meta.env.DEV;
@@ -83,6 +90,55 @@
   /** True once this run's OPFS directory is gone; false if removal kept failing. */
   let storageCleanup: boolean | undefined = $state();
   let active: { cancel(): void } | undefined;
+
+  /** The record shown above the results: this run's once it finished, or one opened from history. */
+  let view: RunRecord | undefined = $state();
+  let viewSaved = $state(false);
+  const loaded = loadHistory();
+  let history: RunRecord[] = $state(loaded.runs);
+  let historyMessage: string | undefined = $state(loaded.error);
+
+  /** Replaces the history and saves it (after a run, never during one). */
+  function setHistory(runs: RunRecord[], note?: string) {
+    history = runs;
+    historyMessage = saveHistory(runs) ?? note;
+  }
+
+  function open(r: RunRecord) {
+    const v = toView(r);
+    outcomes = v.outcomes;
+    multiOutcomes = v.multiOutcomes;
+    memOutcomes = v.memOutcomes;
+    memMulti = v.memMulti;
+    gpuPlan = v.gpuPlan;
+    gpuRuns = v.gpuRuns;
+    storagePlan = v.storagePlan;
+    storageOutcomes = v.storageOutcomes;
+    storageError = v.storageError;
+    storageCleanup = undefined;
+    view = r;
+    viewSaved = true;
+    phase = { kind: 'idle' };
+  }
+
+  function imported(x: RunRecord[] | string) {
+    if (typeof x === 'string') {
+      historyMessage = x;
+      return;
+    }
+    const m = mergeRuns(history, x);
+    const skipped = x.length - m.added;
+    setHistory(
+      m.runs,
+      `Imported ${m.added} run${m.added === 1 ? '' : 's'}${skipped ? ` (${skipped} already in history)` : ''}${m.dropped ? `; ${m.dropped} oldest dropped (limit 50)` : ''}.`,
+    );
+  }
+
+  /** References to show beside a component's raw numbers: none when not comparable. */
+  const refsOf = (c: ComponentRecord | undefined) =>
+    view && c && !excluded(c, view.size) ? refsFor(view.scoreVersion) : [];
+  const comp = (id: ComponentId, pref?: string) =>
+    view?.components.find((c) => c.id === id && (!pref || c.gpu?.preference === pref));
 
   // Test files from runs that crashed or were closed mid-run (SPEC 3.5).
   // run() awaits this before measuring, so it never overlaps a measurement.
@@ -140,6 +196,8 @@
     storageOutcomes = [];
     storageError = undefined;
     storageCleanup = undefined;
+    view = undefined;
+    viewSaved = false;
     cancelRequested = false;
     phase = { kind: 'running', index: 0, total: 0, current: 'starting' };
     // Before any measurement: finish the load-time sweep (and re-sweep when
@@ -155,6 +213,8 @@
     }
     if (chosen.some((c) => c.id === 'gpu')) gpuPlan = await planGpus(gpuChoice);
     if (chosen.some((c) => c.id === 'storage')) storagePlan = await planStorage(size);
+    // System info is read once, before any measurement (SPEC 3.6).
+    const system = await collectSystemInfo();
     const total = chosen.reduce((n, c) => n + stepsFor(c.id, c.kernels, gpuPlan), 0);
     phase = { kind: 'running', index: 0, total, current: 'starting' };
     let offset = 0;
@@ -255,6 +315,20 @@
         } else await single(c.name, c.kernels, outcomes);
       }
       phase = { kind: 'done' };
+      // Scoring and saving happen after the last measurement (SPEC 7).
+      const live: RunView = {
+        outcomes,
+        multiOutcomes,
+        memOutcomes,
+        memMulti,
+        gpuPlan,
+        gpuRuns,
+        storagePlan,
+        storageOutcomes,
+        storageError,
+      };
+      view = buildRecord(live, chosen.map((c) => c.id), mode, size, system);
+      setHistory(mergeRuns(history, [view]).runs);
     } catch (err) {
       phase =
         err instanceof Cancelled
@@ -372,19 +446,23 @@
     <p class="error" data-testid="error">{phase.message}</p>
   {/if}
 
+  {#if view}
+    <Points run={view} saved={viewSaved} />
+  {/if}
+
   {#if outcomes.length > 0}
     <h2>CPU — single core</h2>
-    <Results {outcomes} />
+    <Results {outcomes} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
   {/if}
 
   {#if multiOutcomes.length > 0}
     <h2>CPU — all cores</h2>
-    <MultiResults outcomes={multiOutcomes} />
+    <MultiResults outcomes={multiOutcomes} refs={refsOf(comp('cpu-multi'))} />
   {/if}
 
   {#if memOutcomes.length > 0 || memMulti.length > 0}
     <h2>Memory</h2>
-    <MemoryResults outcomes={memOutcomes} multi={memMulti} smoke={size === 'smoke'} />
+    <MemoryResults outcomes={memOutcomes} multi={memMulti} smoke={(view?.size ?? size) === 'smoke'} refs={refsOf(comp('memory'))} />
   {/if}
 
   {#if gpuPlan}
@@ -418,7 +496,12 @@
       <h3 data-testid="gpu-run-{g.target.preference}">
         {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
       </h3>
-      <GpuResults outcomes={g.outcomes} info={g.info} api={gpuPlan.api} />
+      <GpuResults
+        outcomes={g.outcomes}
+        info={g.info}
+        api={gpuPlan.api}
+        refs={refsOf(comp('gpu', g.target.preference))}
+      />
     {/each}
   {/if}
 
@@ -429,8 +512,18 @@
       plan={storagePlan}
       error={storageError}
       cleanup={storageCleanup}
+      refs={refsOf(comp('storage'))}
     />
   {/if}
+
+  <History
+    runs={history}
+    message={historyMessage}
+    disabled={phase.kind === 'running'}
+    onopen={open}
+    onchange={(runs) => setHistory(runs)}
+    onimport={imported}
+  />
 
   <p class="muted note">
     These are browser scores: this PC's speed through this browser. For steady numbers, keep
@@ -444,11 +537,6 @@
     color: #fff;
     padding: 0.4rem 0.8rem;
     margin: -1.5rem -1.5rem 1rem;
-  }
-  .blocked,
-  .error {
-    border-left: 4px solid #dc2626;
-    padding-left: 0.8rem;
   }
   fieldset {
     border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
@@ -467,16 +555,7 @@
     display: inline;
     margin-right: 0.75rem;
   }
-  h3 {
-    font-size: 1rem;
-    margin: 1rem 0 0.4rem;
-  }
-  h2 {
-    font-size: 1.1rem;
-    margin: 1.25rem 0 0.5rem;
-  }
-  .off,
-  .muted {
+  .off {
     opacity: 0.6;
   }
 </style>

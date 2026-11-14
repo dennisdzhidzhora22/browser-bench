@@ -143,7 +143,9 @@ power preference. The user picks **Fast** (`high-performance`), **Power-saving**
 GPU, but the browser and the OS (e.g. Windows per-app graphics settings) decide. Before the
 run, the page asks for an adapter with each chosen preference and compares what the browser
 reports; if both give the same GPU it is tested once and the page says so. Each tested GPU
-gets its own results table, labelled with what the browser reports.
+gets its own results table, labelled with what the browser reports. Scoring (M6): each
+tested GPU gets its own GPU points; only the **Fast** (`high-performance`) GPU counts in the
+total (or the only GPU tested, when the user picked Power-saving).
 
 Limit (verified on the owner's PC: Arc 140T + RTX 5070 Ti, both preferences gave the 140T):
 Chrome on Windows ignores the preference for WebGPU and uses one GPU for all its work, and
@@ -194,6 +196,13 @@ compared with each other or with references.
 
 User agent, browser version, logical core count, `deviceMemory` (coarse), GPU adapter info,
 screen size, measured refresh rate, `crossOriginIsolated`. Collected once before a run.
+
+How it works (M6): `lib/sysinfo` reads brand and full version from
+`navigator.userAgentData.getHighEntropyValues(['fullVersionList'])` (skipping GREASE brands and
+preferring the product over "Chromium"), else parses the UA string. Screen is CSS pixels and
+device pixel ratio. GPU info is what the GPU worker reports for each tested GPU. **Refresh rate
+is not measured:** no result depends on it (GPU tests render off-screen), and measuring it
+would add about half a second of `requestAnimationFrame` counting before every run.
 
 ## 4. Run modes
 
@@ -253,6 +262,47 @@ All modes:
 - Any change to a kernel or its size bumps `scoreVersion`. Results with different
   `scoreVersion` are never compared.
 
+How it works (M6):
+
+- **Record.** Each finished run (not cancelled or failed) becomes one `RunRecord`
+  (`lib/store/schema.ts`, format `schema: 1`): run id (UUID), UTC timestamp, mode, size id,
+  `scoreVersion`, system info (3.6), and one entry per component run. GPU has one entry per
+  tested GPU (preference, label, API, adapter info); storage records the file size used and
+  whether it was scaled. Each kernel entry holds its key (`defKey`), unit, headline value
+  (null when invalid), sample-time median/min/max in ms, spread, samples taken, valid / noisy /
+  hidden flags and error; all-cores entries add worker count, 1-worker value, scaling and the
+  weak-baseline flag. No per-sample arrays; numbers keep 6 significant digits. A full run is
+  about 11 kB of JSON. Memory latency is stored as **ns per access** (unit `ns`).
+- **Constants.** `lib/scoring/constants.ts`: `SCORE_VERSION = 1` and one constant per
+  `<component>/<defKey>` (e.g. `cpu-multi/sha256`, `memory/mem_latency:16384`), in the
+  record's unit. The M6 constants are **provisional**: rounded medians of one Quick run on the
+  development PC. M8 refreezes them from the owner's PC.
+- **Points.** Component points = `1000 × geomean(value / constant)` over the kernels that have
+  a constant and a valid value; units where smaller is better (`ns`) use
+  `constant / value`. All-cores CPU scores the combined (all workers) throughput. A component is
+  **partial** when one of its kernels is invalid, hidden or missing. Total = geomean of the
+  counted component points; **partial** unless all five components ran with points and none
+  is partial.
+- **No points, and never compared with references:** smoke-size runs ("smoke: no points"),
+  the WebGL2 fallback, and storage with a scaled-down file. Hidden and invalid results never
+  count.
+- **References.** `lib/scoring/references.json`: `[{ name, scoreVersion, results: { "<component>/<defKey>": value }, points: { "<component>": n, total: n } }]`.
+  Empty until M8. The results tables show one extra column per entry whose `scoreVersion`
+  matches this build's; with none, the column is hidden. Excluded components get no column.
+- **History.** `lib/store/history.ts` keeps up to 50 runs in `localStorage` under
+  `browser-bench:history` (the export format, compact), newest first. Smoke runs are saved
+  and marked. Saving happens after the last measurement. A full quota or blocked storage shows
+  a message; unreadable saved data shows a message and is replaced by the next save. The
+  History section lists date, mode, browser and version, total (or "partial", "smoke: no
+  points", "not comparable (score vN)"); a run can be opened, exported or deleted, and all
+  runs exported or cleared (clear asks once more).
+- **Export / import.** A file is `{ format: "browser-bench", schema: 1, runs: [...] }`,
+  downloaded through a Blob URL (no network). Import checks the format marker, the schema
+  version (unknown version: a clear message) and every field's type; any bad run rejects the
+  whole file with a message, and nothing throws into the UI. Runs already in history (same
+  id) are skipped. Runs with another `scoreVersion` import but show "not comparable (score
+  vN)": their saved points are shown as saved, and no reference column appears.
+
 ## 7. Overhead rules for everything that is not a benchmark
 
 These are requirements, and the reviewer checks each one.
@@ -293,7 +343,7 @@ browser-bench/
     lib/harness/           worker protocol, timing, stats, orchestrator
     lib/bench/{cpu,memory,gpu,storage}/
     lib/scoring/           constants.ts, references.json, score.ts
-    lib/store/             history, export, import, schema versions
+    lib/store/             history, export, import, schema versions, record (outcomes <-> record)
     lib/sysinfo/
     ui/                    Svelte components
     workers/

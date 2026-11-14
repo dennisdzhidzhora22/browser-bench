@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatBytes, type StoragePlan } from '../lib/bench/storage/index.ts';
   import type { KernelOutcome } from '../lib/harness/orchestrator.ts';
+  import type { Reference } from '../lib/scoring/score.ts';
   import Results from './Results.svelte';
 
   let {
@@ -8,6 +9,7 @@
     plan,
     error,
     cleanup,
+    refs = [],
   }: {
     outcomes: KernelOutcome[];
     plan: StoragePlan;
@@ -15,6 +17,7 @@
     error: string | undefined;
     /** Whether the run's test directory was removed afterwards; undefined while running. */
     cleanup: boolean | undefined;
+    refs?: Reference[];
   } = $props();
 </script>
 
@@ -35,7 +38,7 @@
   {#if error}
     <p class="error" data-testid="storage-error">{error}</p>
   {/if}
-  <Results {outcomes} />
+  <Results {outcomes} {refs} prefix="storage" />
   <p class="muted" data-testid="storage-caveat">
     OS file cache can inflate reads; the browser sits between the test and the disk. The test
     file is smaller than this PC's memory, so reads (and writes before the flush) may never reach
@@ -52,17 +55,3 @@
   {/if}
 {/if}
 
-<style>
-  .muted {
-    font-size: 0.85em;
-    opacity: 0.6;
-  }
-  .warn {
-    border-left: 4px solid #d97706;
-    padding-left: 0.8rem;
-  }
-  .error {
-    border-left: 4px solid #dc2626;
-    padding-left: 0.8rem;
-  }
-</style>
