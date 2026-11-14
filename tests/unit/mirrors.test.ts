@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { cpuKernels } from '../../src/lib/bench/cpu/index.ts';
 import { LZ_PASSES } from '../../src/lib/bench/cpu/lz.ts';
 import { SHA256_PASSES } from '../../src/lib/bench/cpu/sha256.ts';
+import { COPY_PASSES, FILL_PASSES, LATENCY_HOPS, latencyDefs, memCopy, memFill } from '../../src/lib/bench/memory/index.ts';
 import type { KernelDef } from '../../src/lib/bench/types.ts';
 import type { KernelModule } from '../../src/lib/harness/wasm.ts';
 import { f64Bits, fold, loadKernels, Rng, START } from './support.ts';
@@ -750,4 +751,217 @@ describe('trace mirror', () => {
     const k = mod.kernel('trace');
     for (const size of [0, 1, 2, 3, 5, 18]) expect(k.prepare(1, size), `size ${size}`).toBe(2);
   });
+});
+
+// ─────────────────────── memory: fill, copy, latency ───────────────────────
+// Mirrors written from the kernels/src/mem.rs header only.
+
+const MEM_MB = 1 << 20;
+
+/** mem_fill header: per pass set every byte to (seed + p) & 0xFF, fold buf[0], buf[size/2], buf[size-1]. */
+function fillMirror(seed: number, size: number): number {
+  const buf = new Uint8Array(size);
+  let acc = START;
+  for (let p = 0; p < FILL_PASSES; p++) {
+    const v = ((seed >>> 0) + p) & 0xff; // low byte of the wrapping u32 sum
+    buf.fill(v);
+    acc = fold(acc, buf[0]!);
+    acc = fold(acc, buf[Math.floor(size / 2)]!);
+    acc = fold(acc, buf[size - 1]!);
+  }
+  return fold(acc, size);
+}
+
+/** mem_copy header: src = sha256-style buffer; per pass copy src -> dst, fold dst[(p * 4099) % size]. */
+function copyMirror(seed: number, size: number): number {
+  const src = sha256Buffer(seed, size);
+  const dst = Buffer.alloc(size);
+  let acc = START;
+  for (let p = 0; p < COPY_PASSES; p++) {
+    src.copy(dst);
+    acc = fold(acc, dst[(p * 4099) % size]!);
+  }
+  return fold(fold(acc, dst[size - 1]!), size);
+}
+
+/** mem_latency header: Sattolo shuffle (j = next_u32() % i, i from n-1 down to 1), then next[order[i]] = order[(i+1) % n]. */
+function latencyNext(seed: number, bytes: number): Uint32Array {
+  const n = bytes / 64;
+  const order = new Uint32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  const rng = new Rng(seed);
+  for (let i = n - 1; i >= 1; i--) {
+    const j = rng.nextU32() % i;
+    const t = order[i]!;
+    order[i] = order[j]!;
+    order[j] = t;
+  }
+  const next = new Uint32Array(n);
+  for (let i = 0; i < n; i++) next[order[i]!] = order[(i + 1) % n]!;
+  return next;
+}
+
+/** mem_latency run(): idx = 0; LATENCY_HOPS times idx = next[idx]. */
+function latencyMirror(seed: number, bytes: number): number {
+  const next = latencyNext(seed, bytes);
+  let idx = 0;
+  for (let h = 0; h < LATENCY_HOPS; h++) idx = next[idx]!;
+  return idx;
+}
+
+/** True when walking from line 0 visits every line once and returns to 0 after exactly n steps. */
+function isSingleCycle(next: ArrayLike<number>, n: number): boolean {
+  const seen = new Uint8Array(n);
+  let idx = 0;
+  for (let step = 1; step <= n; step++) {
+    idx = next[idx]!;
+    if (idx >= n) return false;
+    if (idx === 0) return step === n; // back at the start: only fine on the last step
+    if (seen[idx]) return false;
+    seen[idx] = 1;
+  }
+  return false; // never returned to 0
+}
+
+const memSeeds = [0, 1, 2, 3, 42, 0xdeadbeef, 0xffffffff];
+
+describe('mem_fill mirror', () => {
+  it('the def agrees with the header: FILL_PASSES = 40, work = size x passes', () => {
+    expect(FILL_PASSES).toBe(40);
+    expect(memFill.work(1e9)).toBe(40);
+  });
+  it('reproduces expected.smoke', () => {
+    expect(fillMirror(memFill.seed, memFill.sizes.smoke)).toBe(memFill.expected.smoke);
+  });
+  // 1: buf[0], buf[size/2] and buf[size-1] are the same byte; 2, 3: size/2 rounds down.
+  it.each([1, 2, 3, 4, 5, 1000, 4096, 65_537])('matches at size %i', (size) => {
+    expect(wasmChecksum('mem_fill', memFill.seed, size)).toBe(fillMirror(memFill.seed, size));
+  });
+  // 255, 256: the & 0xFF wrap; 0xFFFFFFF0 and 0xFFFFFFFF: seed + p wraps past u32::MAX.
+  it.each([0, 1, 2, 255, 256, 257, 0xfffffff0, 0xffffffff])('matches for seed %i', (seed) => {
+    expect(wasmChecksum('mem_fill', seed, 4096)).toBe(fillMirror(seed, 4096));
+  });
+  it('the checksum depends on the seed only through (seed + p) & 0xFF', () => {
+    expect(fillMirror(256, 100)).toBe(fillMirror(0, 100));
+    expect(fillMirror(1, 100)).not.toBe(fillMirror(0, 100));
+  });
+});
+
+describe('mem_copy mirror', () => {
+  it('the def agrees with the header: COPY_PASSES = 96, work = size x passes', () => {
+    expect(COPY_PASSES).toBe(96);
+    expect(memCopy.work(1e9)).toBe(96);
+  });
+  it('reproduces expected.smoke and expected.multi (the same buffer generator as sha256)', () => {
+    expect(copyMirror(memCopy.seed, memCopy.sizes.smoke)).toBe(memCopy.expected.smoke);
+    expect(copyMirror(memCopy.seed, memCopy.multi!.size)).toBe(memCopy.multi!.expected);
+  });
+  // 1, 2, 3, 5, 7: truncated final chunk and size < 4099 (index wraps); 4099, 4100: modulus boundary.
+  it.each([1, 2, 3, 4, 5, 7, 100, 1000, 4098, 4099, 4100, 10_001, 70_000])('matches at size %i', (size) => {
+    expect(wasmChecksum('mem_copy', memCopy.seed, size)).toBe(copyMirror(memCopy.seed, size));
+  });
+  it.each(memSeeds)('matches for seed %i', (seed) => {
+    expect(wasmChecksum('mem_copy', seed, 5000)).toBe(copyMirror(seed, 5000));
+  });
+});
+
+describe('mem_latency mirror', () => {
+  it('the def agrees with the header: HOPS = 2^20 + 7 (not a power of two), work = HOPS', () => {
+    expect(LATENCY_HOPS).toBe(1_048_583);
+    for (const d of latencyDefs) expect(d.work(d.sizes.standard)).toBe(LATENCY_HOPS);
+  });
+  it('reproduces expected.smoke', () => {
+    const d = latencyDefs[0]!;
+    expect(latencyMirror(d.seed, d.sizes.smoke)).toBe(d.expected.smoke);
+  });
+  // Every real size up to 16 MB (the larger ones run in the BENCH_STANDARD block).
+  it.each(latencyDefs.filter((d) => d.sizes.standard <= 16 * MEM_MB).map((d) => [d.variant, d] as const))(
+    'reproduces expected.standard at %s bytes',
+    (_v, d) => {
+      expect(latencyMirror(d.seed, d.sizes.standard)).toBe(d.expected.standard);
+    },
+  );
+  // 128 = two lines (the minimum); 192, 320 = odd line counts; 6400 = 100 lines.
+  it.each([128, 192, 256, 320, 1024, 4096, 6400, 65_536])('matches the wasm kernel at %i bytes, several seeds', (bytes) => {
+    for (const seed of memSeeds) {
+      expect(wasmChecksum('mem_latency', seed, bytes), `seed ${seed}`).toBe(latencyMirror(seed, bytes));
+    }
+  });
+  it('two lines: the chain is 0 -> 1 -> 0, so an odd hop count ends on line 1', () => {
+    expect(Array.from(latencyNext(1, 128))).toEqual([1, 0]);
+    expect(LATENCY_HOPS % 2).toBe(1);
+    expect(wasmChecksum('mem_latency', 1, 128)).toBe(1);
+  });
+  it('seed 0 uses the Rng fallback like every other kernel', () => {
+    expect(wasmChecksum('mem_latency', 0, 4096)).toBe(latencyMirror(0, 4096));
+  });
+});
+
+describe('mem_latency chain is a single cycle through every line', () => {
+  const sizes = [128, 192, 256, 320, 1024, 4096, 6400, 65_536];
+
+  it.each(sizes)('JS mirror, %i bytes, several seeds', (bytes) => {
+    const n = bytes / 64;
+    for (const seed of memSeeds) {
+      const next = latencyNext(seed, bytes);
+      expect(isSingleCycle(next, n), `seed ${seed}`).toBe(true);
+      for (let k = 0; k < n; k++) expect(next[k], `seed ${seed} line ${k} is not a fixed point`).not.toBe(k);
+    }
+  });
+
+  it('JS mirror at the real sizes up to 16 MB', () => {
+    for (const d of latencyDefs.filter((x) => x.sizes.standard <= 16 * MEM_MB)) {
+      const n = d.sizes.standard / 64;
+      expect(isSingleCycle(latencyNext(d.seed, d.sizes.standard), n), d.variant).toBe(true);
+    }
+  });
+
+  it('the checksum after HOPS steps equals the position (HOPS mod n) steps along the cycle', () => {
+    for (const bytes of sizes) {
+      const n = bytes / 64;
+      for (const seed of [1, 2, 3]) {
+        const next = latencyNext(seed, bytes);
+        let idx = 0;
+        for (let h = 0; h < LATENCY_HOPS % n; h++) idx = next[idx]!;
+        expect(idx, `${bytes} bytes seed ${seed}`).toBe(latencyMirror(seed, bytes));
+      }
+    }
+  });
+
+  // White box: the wasm chain itself. Line k's first u32 is the next line (header). On a fresh
+  // instance the arena starts at the initial memory size, 16-aligned, and the chain is the first
+  // allocation (kernels/src/arena.rs, mem.rs). A layout change would break this test, not the kernel.
+  it.each(sizes)('the wasm chain in memory, %i bytes: equals the mirror and is one cycle', async (bytes) => {
+    const n = bytes / 64;
+    for (const seed of [1, 2, 0xdeadbeef]) {
+      const m = await loadKernels();
+      const base = (m.memory.buffer.byteLength + 15) & ~15;
+      expect(m.kernel('mem_latency').prepare(seed, bytes)).toBe(0);
+      const words = new Uint32Array(m.memory.buffer, base, n * 16);
+      const wasmNext = new Uint32Array(n);
+      for (let k = 0; k < n; k++) wasmNext[k] = words[k * 16]!;
+      expect(isSingleCycle(wasmNext, n), `seed ${seed}`).toBe(true);
+      expect(Array.from(wasmNext), `seed ${seed}`).toEqual(Array.from(latencyNext(seed, bytes)));
+    }
+  });
+});
+
+describe.skipIf(process.env['BENCH_STANDARD'] !== '1')('memory mirrors reproduce the standard expectations', () => {
+  it('mem_fill standard', { timeout: 120_000 }, () => {
+    expect(fillMirror(memFill.seed, memFill.sizes.standard)).toBe(memFill.expected.standard);
+  });
+  it('mem_copy standard', { timeout: 120_000 }, () => {
+    expect(copyMirror(memCopy.seed, memCopy.sizes.standard)).toBe(memCopy.expected.standard);
+  });
+  it.each(latencyDefs.filter((d) => d.sizes.standard > 16 * MEM_MB).map((d) => [d.variant, d] as const))(
+    'mem_latency at %s bytes',
+    { timeout: 120_000 },
+    (_v, d) => {
+      const next = latencyNext(d.seed, d.sizes.standard);
+      expect(isSingleCycle(next, d.sizes.standard / 64)).toBe(true);
+      let idx = 0;
+      for (let h = 0; h < LATENCY_HOPS; h++) idx = next[idx]!;
+      expect(idx).toBe(d.expected.standard);
+    },
+  );
 });

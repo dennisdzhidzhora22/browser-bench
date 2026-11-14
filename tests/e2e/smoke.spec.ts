@@ -49,8 +49,11 @@ test.describe('M1 smoke', () => {
     const cpu = page.getByTestId('component-cpu-single');
     await expect(cpu).toBeChecked();
     await expect(cpu).toBeEnabled();
-    // cpu-multi became selectable in M2 (see 'M2 all cores' below).
-    for (const id of ['memory', 'gpu', 'storage']) {
+    const memory = page.getByTestId('component-memory');
+    await expect(memory).toBeEnabled();
+    await expect(memory).not.toBeChecked();
+    // cpu-multi became selectable in M2 and memory in M3 (see 'M2 all cores' and 'M3 memory' below).
+    for (const id of ['gpu', 'storage']) {
       const box = page.getByTestId(`component-${id}`);
       await expect(box, id).toBeDisabled();
       await expect(box, id).not.toBeChecked();
@@ -452,6 +455,266 @@ test.describe('M2 all cores', () => {
     page.on('request', (req) => urls.push(req.url()));
     await page.goto('/?smoke');
     await onlyMulti(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    const external = urls.filter((u) => {
+      if (u.startsWith('data:') || u.startsWith('blob:')) return false;
+      return new URL(u).origin !== origin;
+    });
+    expect(external).toEqual([]);
+  });
+});
+
+// ── M3: memory ────────────────────────────────────────────────────────────────
+
+test.describe('M3 memory', () => {
+  const DASH = '—';
+  // Working-set sizes of the latency curve, in bytes (src/lib/bench/memory/index.ts): 16 KB ... 256 MB.
+  const LATENCY_SIZES = Array.from({ length: 15 }, (_, i) => 2 ** (14 + i));
+  // 2 bandwidth rows + 1 all-cores row + 15 latency rows.
+  const MEMORY_CHECKS = 3 + LATENCY_SIZES.length;
+  // Progress counts kernels: fill, copy, 15 latency points, then all-cores copy.
+  const MEMORY_STEPS = 2 + LATENCY_SIZES.length + 1;
+
+  async function onlyMemory(page: Page) {
+    await page.getByTestId('component-memory').check();
+    await page.getByTestId('component-cpu-single').uncheck();
+  }
+
+  /** Number of non-transparent pixels, plus the bitmap size, of the latency chart canvas. */
+  async function chartPixels(page: Page) {
+    return page.getByTestId('latency-chart').evaluate((el) => {
+      const c = el as HTMLCanvasElement;
+      const data = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+      let painted = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) painted++;
+      return { width: c.width, height: c.height, painted };
+    });
+  }
+
+  test('memory is enabled and unchecked by default', async ({ page }) => {
+    await page.goto('/?smoke');
+    const memory = page.getByTestId('component-memory');
+    await expect(memory).toBeEnabled();
+    await expect(memory).not.toBeChecked();
+    await expect(page.getByTestId('memory-results')).toHaveCount(0);
+    await expect(page.getByTestId('latency-chart')).toHaveCount(0);
+  });
+
+  test('the worker count input shows when only Memory is selected', async ({ page }) => {
+    await page.goto('/?smoke');
+    const workers = page.getByTestId('workers');
+    await expect(workers).toHaveCount(0);
+    await onlyMemory(page);
+    await expect(workers).toBeVisible();
+    await expect(workers).toBeEnabled();
+    const n = Number(await workers.inputValue());
+    expect(Number.isInteger(n) && n >= 1).toBe(true);
+    // Still there with cpu-multi added, and gone only when neither needs it.
+    await page.getByTestId('component-cpu-multi').check();
+    await expect(workers).toBeVisible();
+    await page.getByTestId('component-memory').uncheck();
+    await expect(workers).toBeVisible();
+    await page.getByTestId('component-cpu-multi').uncheck();
+    await expect(workers).toHaveCount(0);
+  });
+
+  test('a worker count of 0 disables Run while Memory is checked', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMemory(page);
+    const workers = page.getByTestId('workers');
+    await workers.fill('0');
+    await expect(page.getByTestId('run')).toBeDisabled();
+    await workers.fill('');
+    await expect(page.getByTestId('run')).toBeDisabled();
+    await workers.fill('2');
+    await expect(page.getByTestId('run')).toBeEnabled();
+  });
+
+  test('smoke run of Memory only: all rows, 15 latency rows, valid checksums, a drawn chart', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMemory(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    await expect(page.getByTestId('error')).toHaveCount(0);
+    await expect(page.getByTestId('cancel')).toHaveCount(0);
+    await expect(page.getByTestId('run')).toBeEnabled();
+
+    // Only the memory table: no CPU tables.
+    await expect(page.getByTestId('memory-results')).toBeVisible();
+    await expect(page.getByTestId('results')).toHaveCount(0);
+    await expect(page.getByTestId('multi-results')).toHaveCount(0);
+
+    // Bandwidth rows: fill and copy single-core, copy all-cores, in that order.
+    await expect(page.getByTestId('mem-row-mem_fill')).toHaveCount(1);
+    await expect(page.getByTestId('mem-row-mem_copy')).toHaveCount(1);
+    await expect(page.getByTestId('mem-row-mem_copy-multi')).toHaveCount(1);
+    const memRows = await page
+      .locator('[data-testid^="mem-row-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+    expect(memRows).toEqual(['mem-row-mem_fill', 'mem-row-mem_copy', 'mem-row-mem_copy-multi']);
+    await expect(page.getByTestId('mem-row-mem_fill')).toContainText('1 core');
+    await expect(page.getByTestId('mem-row-mem_copy-multi')).toContainText('2 workers');
+
+    // 15 latency rows, one per size, ascending.
+    const latencyRows = await page
+      .locator('[data-testid^="latency-row-"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+    expect(latencyRows).toEqual(LATENCY_SIZES.map((s) => `latency-row-${s}`));
+    await expect(page.getByTestId('latency-row-16384')).toContainText('16 KB');
+    await expect(page.getByTestId('latency-row-268435456')).toContainText('256 MB');
+
+    // Every checksum cell is valid and ok.
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(MEMORY_CHECKS);
+    for (const cell of await checks.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true');
+      await expect(cell).toHaveAttribute('data-valid', 'true');
+      await expect(cell).toHaveText(/^(ok|noisy)$/);
+    }
+    // Per section too, so a missing section cannot hide behind another's cells.
+    for (const id of ['mem-row-mem_fill', 'mem-row-mem_copy', 'mem-row-mem_copy-multi']) {
+      await expect(page.getByTestId(id).getByTestId('checksum'), id).toHaveAttribute('data-valid', 'true');
+    }
+    for (const s of LATENCY_SIZES) {
+      await expect(page.getByTestId(`latency-row-${s}`).getByTestId('checksum'), String(s)).toHaveAttribute(
+        'data-valid',
+        'true',
+      );
+    }
+
+    // Structure only (never speed): a number, or a dash when a smoke run is below timer resolution.
+    const values = page.getByTestId('value');
+    await expect(values).toHaveCount(MEMORY_CHECKS);
+    for (const v of await values.all()) {
+      await expect(v).toHaveText(new RegExp(`^(\\d+(\\.\\d+)?|${DASH})$`));
+    }
+
+    // The chart: a canvas with a real bitmap that has something drawn on it (axes at least).
+    await expect(page.getByTestId('latency-chart')).toBeVisible();
+    const { width, height, painted } = await chartPixels(page);
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    expect(painted).toBeGreaterThan(100);
+  });
+
+  test('a second Memory run replaces the results instead of appending', async ({ page }) => {
+    await page.goto('/?smoke');
+    await onlyMemory(page);
+    await page.getByTestId('workers').fill('2');
+    for (let i = 0; i < 2; i++) {
+      await page.getByTestId('run').click();
+      await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    }
+    await expect(page.getByTestId('checksum')).toHaveCount(MEMORY_CHECKS);
+    await expect(page.locator('[data-testid^="latency-row-"]')).toHaveCount(LATENCY_SIZES.length);
+    await expect(page.getByTestId('latency-chart')).toHaveCount(1);
+  });
+
+  test('a hidden tab marks every memory row hidden and invalid; the chart is still there', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    });
+    await onlyMemory(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(MEMORY_CHECKS);
+    for (const cell of await checks.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true'); // the maths was right...
+      await expect(cell).toHaveAttribute('data-valid', 'false'); // ...but the timing is discarded
+      await expect(cell).toHaveText('hidden');
+    }
+    for (const v of await page.getByTestId('value').all()) await expect(v).toHaveText(DASH);
+    await expect(page.getByTestId('latency-chart')).toBeVisible();
+  });
+
+  test('all three components together: all three tables', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('component-cpu-multi').check();
+    await page.getByTestId('component-memory').check();
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 300_000 });
+    await expect(page.getByTestId('error')).toHaveCount(0);
+    await expect(page.getByTestId('results')).toBeVisible();
+    await expect(page.getByTestId('multi-results')).toBeVisible();
+    await expect(page.getByTestId('memory-results')).toBeVisible();
+    await expect(page.locator('[data-testid^="row-"]')).toHaveCount(CPU_KERNELS.length);
+    await expect(page.locator('[data-testid^="multi-row-"]')).toHaveCount(CPU_KERNELS.length);
+    await expect(page.locator('[data-testid^="mem-row-"]')).toHaveCount(3);
+    await expect(page.locator('[data-testid^="latency-row-"]')).toHaveCount(LATENCY_SIZES.length);
+    await expect(page.getByTestId('latency-chart')).toBeVisible();
+
+    const checks = page.getByTestId('checksum');
+    await expect(checks).toHaveCount(CPU_KERNELS.length * 2 + MEMORY_CHECKS);
+    for (const cell of await checks.all()) {
+      await expect(cell).toHaveAttribute('data-ok', 'true');
+      await expect(cell).toHaveAttribute('data-valid', 'true');
+    }
+  });
+
+  test('Memory is not run when it is unchecked (CPU-only run has no memory table)', async ({ page }) => {
+    await page.goto('/?smoke');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
+    await expect(page.getByTestId('memory-results')).toHaveCount(0);
+    await expect(page.getByTestId('latency-chart')).toHaveCount(0);
+  });
+
+  test('cancel during a standard-size memory run', async ({ page }) => {
+    // Standard sizes: the first kernel (128 MB fill x 40 passes) alone runs for seconds.
+    await page.goto('/');
+    await onlyMemory(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    const cancel = page.getByTestId('cancel');
+    await expect(cancel).toBeVisible();
+    await expect(page.getByTestId('progress')).toContainText(`1 / ${MEMORY_STEPS}`);
+    await expect(page.getByTestId('run')).toHaveCount(0);
+    // Let the first kernel get past prepare and into its timed runs.
+    await page.waitForTimeout(1_500);
+    await expect(cancel).toBeVisible();
+
+    await cancel.click();
+
+    await expect(page.getByTestId('status')).toHaveText('Cancelled');
+    await expect(page.getByTestId('error')).toHaveCount(0);
+    await expect(page.getByTestId('cancel')).toHaveCount(0);
+    await expect(page.getByTestId('run')).toBeEnabled();
+    // It never finished, so it must not show every memory row as done.
+    await expect(page.getByTestId('checksum')).not.toHaveCount(MEMORY_CHECKS);
+    // The controls are usable again.
+    await expect(page.getByTestId('workers')).toBeEnabled();
+    await expect(page.getByTestId('component-memory')).toBeEnabled();
+  });
+
+  test('can run again after cancelling a memory run', async ({ page }) => {
+    await page.goto('/');
+    await onlyMemory(page);
+    await page.getByTestId('workers').fill('2');
+    await page.getByTestId('run').click();
+    await page.getByTestId('cancel').click();
+    await expect(page.getByTestId('status')).toHaveText('Cancelled');
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('cancel')).toBeVisible();
+    await page.getByTestId('cancel').click();
+    await expect(page.getByTestId('status')).toHaveText('Cancelled');
+    await expect(page.getByTestId('run')).toBeEnabled();
+  });
+
+  test('every network request is same-origin during a memory run', async ({ page, baseURL }) => {
+    const origin = new URL(baseURL!).origin;
+    const urls: string[] = [];
+    page.on('request', (req) => urls.push(req.url()));
+    await page.goto('/?smoke');
+    await onlyMemory(page);
     await page.getByTestId('workers').fill('2');
     await page.getByTestId('run').click();
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
