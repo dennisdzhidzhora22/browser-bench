@@ -8,6 +8,8 @@ export type SizeId = 'smoke' | 'standard';
 export interface KernelDef {
   /** Wasm export prefix: the module exports `<id>_prepare` and `<id>_run`. */
   id: string;
+  /** Tells apart several defs that share one wasm kernel (e.g. latency sizes). */
+  variant?: string;
   /** Short display name. */
   name: string;
   /** What the kernel stresses, a few words. */
@@ -33,4 +35,9 @@ export interface KernelDef {
    * each timed window. Absent = use `standard`.
    */
   multi?: { size: number; expected: number };
+}
+
+/** Unique key for lists: id plus variant. */
+export function defKey(def: KernelDef): string {
+  return def.variant ? `${def.id}:${def.variant}` : def.id;
 }

@@ -29,6 +29,7 @@ mod fft;
 mod lz;
 mod mandelbrot;
 mod matmul;
+mod mem;
 mod mix;
 mod nbody;
 mod sha256;
@@ -39,7 +40,7 @@ mod trace;
 /// changes. JS checks this against `ABI_VERSION` in src/lib/harness/wasm.ts.
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_version() -> u32 {
-    4
+    5
 }
 
 #[panic_handler]

@@ -104,6 +104,14 @@ How it works (M2):
 The latency curve shows the cache levels as steps. Default working set is capped at 1 GiB;
 allocation failure is handled and reported, never thrown at the user.
 
+How it works (M3): fill and copy use wasm bulk-memory instructions (`memory.fill`,
+`memory.copy`), which the browser runs natively, so they show the best bandwidth web code can
+reach. Fill uses 128 MB, copy 64 MB → 64 MB (single core) and 8 MB → 8 MB per worker (all
+cores, through the M2 harness). Copy bandwidth counts bytes copied once. Latency follows a
+random single-cycle chain (Sattolo shuffle) at cache-line stride, so each load waits for the
+last; 15 working-set sizes from 16 KB to 256 MB. Peak wasm memory is about 272 MB (the 256 MB
+chain plus its shuffle table).
+
 ### 3.4 GPU
 
 WebGPU first.

@@ -1,5 +1,6 @@
 // The components a user can select. Kernels are filled in per milestone.
 import { cpuKernels } from './cpu/index.ts';
+import { memoryKernels } from './memory/index.ts';
 import type { ComponentId, KernelDef } from './types.ts';
 
 export interface ComponentDef {
@@ -12,7 +13,7 @@ export interface ComponentDef {
 export const components: readonly ComponentDef[] = [
   { id: 'cpu-single', name: 'CPU — single core', kernels: cpuKernels },
   { id: 'cpu-multi', name: 'CPU — all cores', kernels: cpuKernels },
-  { id: 'memory', name: 'Memory', kernels: [] },
+  { id: 'memory', name: 'Memory', kernels: memoryKernels },
   { id: 'gpu', name: 'GPU', kernels: [] },
   { id: 'storage', name: 'Storage', kernels: [] },
 ];

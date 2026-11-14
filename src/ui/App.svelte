@@ -14,6 +14,8 @@
     startMultiRun,
     type MultiOutcome,
   } from '../lib/harness/multi.ts';
+  import { memCopy } from '../lib/bench/memory/index.ts';
+  import MemoryResults from './MemoryResults.svelte';
   import MultiResults from './MultiResults.svelte';
   import Results from './Results.svelte';
 
@@ -45,11 +47,19 @@
   let phase: Phase = $state({ kind: 'idle' });
   let outcomes: KernelOutcome[] = $state([]);
   let multiOutcomes: MultiOutcome[] = $state([]);
+  let memOutcomes: KernelOutcome[] = $state([]);
+  let memMulti: MultiOutcome[] = $state([]);
   let active: { cancel(): void } | undefined;
   let cancelRequested = false;
 
+  /** Kernels run on several workers: the all-cores CPU test, and all-cores copy. */
+  const multiKernels = (id: ComponentId): readonly KernelDef[] =>
+    id === 'memory' ? [memCopy] : [];
+  const steps = (id: ComponentId, kernels: readonly KernelDef[]) =>
+    kernels.length + multiKernels(id).length;
   const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
-  const totalKernels = $derived(toRun.reduce((n, c) => n + c.kernels.length, 0));
+  const totalKernels = $derived(toRun.reduce((n, c) => n + steps(c.id, c.kernels), 0));
+  const needsWorkers = $derived(selected['cpu-multi'] || selected.memory);
 
   /** Lets Svelte flush and the browser paint before the next kernel starts. */
   async function settle(): Promise<void> {
@@ -76,41 +86,53 @@
     if (total === 0) return;
     outcomes = [];
     multiOutcomes = [];
+    memOutcomes = [];
+    memMulti = [];
     cancelRequested = false;
     phase = { kind: 'running', index: 0, total, current: 'starting' };
     let offset = 0;
+    const hook = (name: string) => {
+      const base = offset;
+      return async (index: number, def: KernelDef) => {
+        phase = { kind: 'running', index: base + index, total, current: `${name}: ${def.name}` };
+        await settle();
+      };
+    };
+    const single = async (name: string, kernels: readonly KernelDef[], out: KernelOutcome[]) => {
+      const r = startRun({
+        kernels,
+        size,
+        mode,
+        beforeKernel: hook(name),
+        afterKernel: (_i, o) => void out.push(o),
+      });
+      active = r;
+      await r.done;
+      offset += kernels.length;
+    };
+    const multi = async (name: string, kernels: readonly KernelDef[], out: MultiOutcome[]) => {
+      const r = startMultiRun({
+        kernels,
+        size,
+        mode,
+        workers: workerCount ?? 0,
+        maxWorkers,
+        beforeKernel: hook(name),
+        afterKernel: (_i, o) => void out.push(o),
+      });
+      active = r;
+      await r.done;
+      offset += kernels.length;
+    };
     try {
       for (const c of plan) {
         if (cancelRequested) throw new Cancelled();
-        const base = offset;
-        const beforeKernel = async (index: number, def: KernelDef) => {
-          phase = { kind: 'running', index: base + index, total, current: `${c.name}: ${def.name}` };
-          await settle();
-        };
-        if (c.id === 'cpu-multi') {
-          const r = startMultiRun({
-            kernels: c.kernels,
-            size,
-            mode,
-            workers: workerCount ?? 0,
-            maxWorkers,
-            beforeKernel,
-            afterKernel: (_i, o) => void multiOutcomes.push(o),
-          });
-          active = r;
-          await r.done;
-        } else {
-          const r = startRun({
-            kernels: c.kernels,
-            size,
-            mode,
-            beforeKernel,
-            afterKernel: (_i, o) => void outcomes.push(o),
-          });
-          active = r;
-          await r.done;
-        }
-        offset += c.kernels.length;
+        if (c.id === 'cpu-multi') await multi(c.name, c.kernels, multiOutcomes);
+        else if (c.id === 'memory') {
+          await single(c.name, c.kernels, memOutcomes);
+          if (cancelRequested) throw new Cancelled();
+          await multi(c.name, multiKernels('memory'), memMulti);
+        } else await single(c.name, c.kernels, outcomes);
       }
       phase = { kind: 'done' };
     } catch (err) {
@@ -160,7 +182,7 @@
         {c.name}
         {#if c.kernels.length === 0}<span class="muted">(not built yet)</span>{/if}
       </label>
-      {#if c.id === 'cpu-multi' && selected['cpu-multi']}
+      {#if c.id === 'cpu-multi' && needsWorkers}
         <label class="sub">
           Workers
           <input
@@ -174,7 +196,7 @@
             }}
             data-testid="workers"
           />
-          <span class="muted">(this browser reports {cores} logical cores)</span>
+          <span class="muted">(all-cores tests; this browser reports {cores} logical cores)</span>
         </label>
       {/if}
     {/each}
@@ -193,7 +215,7 @@
         {phase.index + 1} / {phase.total} · {phase.current}
       </span>
     {:else}
-      <button onclick={run} disabled={totalKernels === 0 || (selected['cpu-multi'] && workerCount === undefined)} data-testid="run"
+      <button onclick={run} disabled={totalKernels === 0 || (needsWorkers && workerCount === undefined)} data-testid="run"
         >Run</button
       >
       {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
@@ -213,6 +235,11 @@
   {#if multiOutcomes.length > 0}
     <h2>CPU — all cores</h2>
     <MultiResults outcomes={multiOutcomes} />
+  {/if}
+
+  {#if memOutcomes.length > 0 || memMulti.length > 0}
+    <h2>Memory</h2>
+    <MemoryResults outcomes={memOutcomes} multi={memMulti} />
   {/if}
 
   <p class="muted note">
