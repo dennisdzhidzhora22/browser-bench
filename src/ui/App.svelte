@@ -14,7 +14,7 @@
     startMultiRun,
     type MultiOutcome,
   } from '../lib/harness/multi.ts';
-  import { memCopy } from '../lib/bench/memory/index.ts';
+  import { memCopyMulti } from '../lib/bench/memory/index.ts';
   import MemoryResults from './MemoryResults.svelte';
   import MultiResults from './MultiResults.svelte';
   import Results from './Results.svelte';
@@ -54,7 +54,7 @@
 
   /** Kernels run on several workers: the all-cores CPU test, and all-cores copy. */
   const multiKernels = (id: ComponentId): readonly KernelDef[] =>
-    id === 'memory' ? [memCopy] : [];
+    id === 'memory' ? [memCopyMulti] : [];
   const steps = (id: ComponentId, kernels: readonly KernelDef[]) =>
     kernels.length + multiKernels(id).length;
   const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
@@ -182,10 +182,11 @@
         {c.name}
         {#if c.kernels.length === 0}<span class="muted">(not built yet)</span>{/if}
       </label>
-      {#if c.id === 'cpu-multi' && needsWorkers}
-        <label class="sub">
-          Workers
-          <input
+    {/each}
+    {#if needsWorkers}
+      <label class="workers">
+        Workers for all-cores tests
+        <input
             type="number"
             min="1"
             max={maxWorkers}
@@ -196,10 +197,9 @@
             }}
             data-testid="workers"
           />
-          <span class="muted">(all-cores tests; this browser reports {cores} logical cores)</span>
-        </label>
-      {/if}
-    {/each}
+        <span class="muted">(this browser reports {cores} logical cores)</span>
+      </label>
+    {/if}
   </fieldset>
 
   <fieldset disabled={phase.kind === 'running'}>
@@ -239,7 +239,7 @@
 
   {#if memOutcomes.length > 0 || memMulti.length > 0}
     <h2>Memory</h2>
-    <MemoryResults outcomes={memOutcomes} multi={memMulti} />
+    <MemoryResults outcomes={memOutcomes} multi={memMulti} smoke={size === 'smoke'} />
   {/if}
 
   <p class="muted note">
@@ -267,10 +267,10 @@
   label {
     display: block;
   }
-  .sub {
-    margin-left: 1.6rem;
+  .workers {
+    margin-top: 0.5rem;
   }
-  .sub input {
+  .workers input {
     width: 4rem;
   }
   h2 {

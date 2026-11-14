@@ -106,11 +106,16 @@ allocation failure is handled and reported, never thrown at the user.
 
 How it works (M3): fill and copy use wasm bulk-memory instructions (`memory.fill`,
 `memory.copy`), which the browser runs natively, so they show the best bandwidth web code can
-reach. Fill uses 128 MB, copy 64 MB → 64 MB (single core) and 8 MB → 8 MB per worker (all
-cores, through the M2 harness). Copy bandwidth counts bytes copied once. Latency follows a
-random single-cycle chain (Sattolo shuffle) at cache-line stride, so each load waits for the
-last; 15 working-set sizes from 16 KB to 256 MB. Peak wasm memory is about 272 MB (the 256 MB
-chain plus its shuffle table).
+reach. Fill uses 256 MB and copy 128 MB → 128 MB, past the largest desktop L3 caches. The
+all-cores copy uses a separate kernel (`mem_copy_mt`, 16 MB → 16 MB per worker, few passes) so
+one call stays short next to the timed window; with few workers its total can fit in cache,
+and the UI says so. Copy bandwidth counts bytes copied once (memory traffic is about 2×), and
+the UI says so. Latency follows a random single-cycle chain at cache-line stride; each hop is
+one dependent load of a stored address, with no index arithmetic. The hop count grows with the
+working set so every line is touched and each run lasts about 0.25 s or more (SPEC 5.3).
+17 working-set sizes from 16 KB to 256 MB, including 12 and 24 MB to locate the L3 → RAM
+step. Peak wasm memory is about 272 MB (the 256 MB chain plus its shuffle table). The memory
+component takes about 70 s in Quick mode (run times are soft limits).
 
 ### 3.4 GPU
 

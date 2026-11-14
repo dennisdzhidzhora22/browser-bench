@@ -4,7 +4,11 @@
   import type { MultiOutcome } from '../lib/harness/multi.ts';
   import type { KernelOutcome } from '../lib/harness/orchestrator.ts';
 
-  let { outcomes, multi }: { outcomes: KernelOutcome[]; multi: MultiOutcome[] } = $props();
+  let {
+    outcomes,
+    multi,
+    smoke = false,
+  }: { outcomes: KernelOutcome[]; multi: MultiOutcome[]; smoke?: boolean } = $props();
 
   const bandwidth = $derived(outcomes.filter((o) => o.def.id !== 'mem_latency'));
   const latency = $derived(
@@ -116,7 +120,14 @@
     {/each}
     {#each multi as o (defKey(o.def))}
       <tr data-testid="mem-row-{o.def.id}-multi">
-        <td>{o.def.name} <span class="muted">{o.workers} workers · {o.def.stresses}</span></td>
+        <td>
+          {o.def.name}
+          <span class="muted">
+            {o.workers} workers · {o.def.stresses}{o.workers < 8
+              ? ' · few workers: total may fit in cache'
+              : ''}
+          </span>
+        </td>
         <td class="r num" data-testid="value">{o.valid ? fmt(o.all?.throughput) : '—'}</td>
         <td>{o.def.unit}</td>
         <td class="r num">{o.all ? `${(o.all.stats.spread * 100).toFixed(1)} %` : '—'}</td>
@@ -140,7 +151,7 @@
     <tbody>
       {#each latency as p (p.size)}
         <tr data-testid="latency-row-{p.size}">
-          <td>{formatBytes(p.size)}</td>
+          <td>{formatBytes(p.size)}{smoke ? ' (smoke run: 4 KB)' : ''}</td>
           <td class="r num" data-testid="value">{fmt(p.ns, 2)}</td>
           <td data-testid="checksum" data-ok={p.o.checksumOk} data-valid={p.o.valid}>
             {status(p.o)}
@@ -150,8 +161,9 @@
     </tbody>
   </table>
   <p class="muted">
-    Each step up is the working set leaving a cache level (L1, L2, L3, then RAM). Large sizes
-    also include address-translation misses, which is what random access really costs.
+    Steps up mostly mark the working set outgrowing a cache level (L1, L2, L3, then RAM). Past
+    a few MB, part of each step is address-translation (TLB) misses, which is what random access
+    across that much memory really costs.
   </p>
 {/if}
 

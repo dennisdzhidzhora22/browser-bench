@@ -1,7 +1,7 @@
 // Typed access to the Rust kernel module (kernels/src/lib.rs).
 
 /** Must equal `abi_version()` in kernels/src/lib.rs. */
-export const ABI_VERSION = 5;
+export const ABI_VERSION = 6;
 
 export interface KernelFns {
   prepare(seed: number, size: number): number;
