@@ -874,8 +874,9 @@ describe('startMultiRun', () => {
       const { run, workersMade } = start(
         { kernels: defs, size: 'smoke', workers: 3 },
         {
+          // Workers are numbered across pools, so `% 3` fails the same slot on the retry too.
           override: (m, w) =>
-            m.type === 'init' && w.number === 2
+            m.type === 'init' && w.number % 3 === 2
               ? { type: 'error', message: 'kernel ABI mismatch: module has 3, page expects 4' }
               : undefined,
         },
@@ -884,7 +885,8 @@ describe('startMultiRun', () => {
       expect(result.ok).toBe(false);
       expect((result as { e: Error }).e.message).toMatch(/worker init failed: kernel ABI mismatch/);
       expect((result as { e: unknown }).e).not.toBeInstanceOf(Cancelled);
-      expect(workersMade).toHaveLength(3); // no retry with a new pool
+      // One retry of the pool start (POOL_RETRY_DELAY_MS later), then give up: 2 pools of 3, no more.
+      expect(workersMade).toHaveLength(6);
       expect(workersMade.flatMap((w) => w.of('prepare'))).toHaveLength(0);
       for (const w of workersMade) expect(w.terminated).toBeGreaterThanOrEqual(1);
     });
@@ -1019,14 +1021,14 @@ describe('startMultiRun', () => {
         {
           override: (m, w) =>
             m.type === 'init'
-              ? w.number === 1
+              ? w.number % 3 === 1
                 ? { type: 'error', message: 'kernel ABI mismatch: module has 3, page expects 4' }
                 : 'hang'
               : undefined,
         },
       );
       await expect(run.done).rejects.toThrow(/worker init failed: kernel ABI mismatch/);
-      expect(workersMade).toHaveLength(3);
+      expect(workersMade).toHaveLength(6); // the failed pool, then one retry pool that fails the same way
       for (const w of workersMade) expect(w.terminated).toBeGreaterThanOrEqual(1);
     });
 
@@ -1046,7 +1048,60 @@ describe('startMultiRun', () => {
       const r = await settle(run.done);
       expect(r.ok).toBe(false);
       expect((r as { e: Error }).e.message).toMatch(/worker init failed: .*bad module/);
-      expect(workersMade).toHaveLength(2);
+      expect(workersMade).toHaveLength(4); // 2 workers, one retry pool of 2, then fatal (not once per kernel)
+      for (const w of workersMade) expect(w.terminated).toBeGreaterThanOrEqual(1);
+    });
+
+    // multi.ts getPool: a failed pool start is retried once after POOL_RETRY_DELAY_MS (the browser can
+    // still be releasing a memory-heavy worker's memory), with a brand-new pool.
+    it('a pool start that fails once is retried with a new pool and the run completes', async () => {
+      const { run, workersMade } = start(
+        { kernels: defs, size: 'smoke', workers: 3 },
+        {
+          // Only the first pool (workers 0-2) fails; worker 1 reports an init error.
+          override: (m, w) =>
+            m.type === 'init' && w.number === 1
+              ? { type: 'error', message: 'out of memory' }
+              : undefined,
+        },
+      );
+      const outcomes = await run.done;
+      expect(outcomes).toHaveLength(defs.length);
+      expect(outcomes.every((o) => o.valid && o.checksumOk)).toBe(true);
+      expect(workersMade).toHaveLength(6);
+      // The failed pool is torn down before the retry pool does any work.
+      for (const w of workersMade.slice(0, 3)) {
+        expect(w.terminated).toBeGreaterThanOrEqual(1);
+        expect(w.of('prepare')).toHaveLength(0);
+      }
+      expect(workersMade.slice(3).flatMap((w) => w.of('prepare')).length).toBeGreaterThan(0);
+      // Every retry worker is initialised exactly once, and the pool is then reused for every kernel.
+      for (const w of workersMade.slice(3)) expect(w.of('init')).toHaveLength(1);
+    });
+
+    it('a pool start that fails once does not retry again for later kernels', async () => {
+      const { run, workersMade } = start(
+        { kernels: defs, size: 'smoke', workers: 2 },
+        { override: (m, w) => (m.type === 'init' && w.number === 0 ? { type: 'error', message: 'oom' } : undefined) },
+      );
+      await run.done;
+      expect(workersMade).toHaveLength(4); // 2 failed + 2 retry workers, not rebuilt per kernel
+    });
+
+    it('cancelling during the retry wait rejects with Cancelled and starts no new workers', async () => {
+      const { run, workersMade } = start(
+        { kernels: defs, size: 'smoke', workers: 3 },
+        { override: (m, w) => (m.type === 'init' && w.number === 1 ? { type: 'error', message: 'oom' } : undefined) },
+      );
+      await sleep(250); // first pool has failed; the retry is waiting out its delay
+      expect(workersMade).toHaveLength(3);
+      run.cancel();
+      const r = await settle(run.done);
+      expect(r.ok).toBe(false);
+      expect((r as { e: unknown }).e).toBeInstanceOf(Cancelled);
+      await sleep(1_200); // past the retry delay: nothing may start after the cancel
+      expect(workersMade).toHaveLength(3);
+      for (const w of workersMade) expect(w.terminated).toBeGreaterThanOrEqual(1);
     });
   });
 

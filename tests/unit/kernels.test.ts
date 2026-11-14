@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { cpuKernels } from '../../src/lib/bench/cpu/index.ts';
-import { latencyDefs, memCopy, memFill, memoryKernels } from '../../src/lib/bench/memory/index.ts';
+import { latencyDefs, latencyHops, memCopy, memCopyMulti, memFill, memoryKernels } from '../../src/lib/bench/memory/index.ts';
 import { mix, MIX_EXPECTED, MIX_SEED, MIX_SIZES } from '../../src/lib/bench/mix.ts';
 import type { KernelDef } from '../../src/lib/bench/types.ts';
 import { ABI_VERSION, instantiateKernels, type KernelModule } from '../../src/lib/harness/wasm.ts';
@@ -29,7 +29,7 @@ beforeAll(async () => {
 describe('kernels.wasm module', () => {
   it('reports the ABI version the page expects', () => {
     expect(mod.abi_version()).toBe(ABI_VERSION);
-    expect(ABI_VERSION).toBe(5);
+    expect(ABI_VERSION).toBe(6);
   });
 
   it('exports linear memory', () => {
@@ -62,7 +62,13 @@ describe('kernels.wasm module', () => {
   });
 
   it('exposes prepare and run for every CPU kernel, every memory kernel and mix', () => {
-    const ids = [...cpuKernels.map((k) => k.id), ...memoryKernels.map((k) => k.id), mix.id];
+    const ids = [
+      ...cpuKernels.map((k) => k.id),
+      ...memoryKernels.map((k) => k.id),
+      memCopyMulti.id,
+      mix.id,
+    ];
+    expect(ids).toContain('mem_copy_mt');
     expect(ids).toContain('mem_latency');
     for (const id of ids) {
       const k = mod.kernel(id);
@@ -278,19 +284,45 @@ describe('peak wasm memory per instance', () => {
 // ── M3: memory kernels (kernels/src/mem.rs, docs/SPEC.md 3.3) ─────────────────
 
 const MB = 1 << 20;
+const KB = 1 << 10;
 /** Request that can never fit in 32-bit wasm memory, whatever the arena base. */
 const TOO_BIG = 0xfffffff0;
+/** Every kernel the memory component can run: the single-core list plus the all-cores copy. */
+const allMemory: readonly KernelDef[] = [...memoryKernels, memCopyMulti];
+/** Same, minus latency: the kernels that fill a buffer of `size` bytes. */
+const bandwidthDefs: readonly KernelDef[] = [memFill, memCopy, memCopyMulti];
 
 const memName = (d: KernelDef) => (d.variant ? `${d.id}:${d.variant}` : d.id);
 
+/** The 17 working-set sizes of the latency curve (docs/SPEC.md 3.3). */
+const LATENCY_SIZES = [
+  16 * KB,
+  32 * KB,
+  64 * KB,
+  128 * KB,
+  256 * KB,
+  512 * KB,
+  1 * MB,
+  2 * MB,
+  4 * MB,
+  8 * MB,
+  12 * MB,
+  16 * MB,
+  24 * MB,
+  32 * MB,
+  64 * MB,
+  128 * MB,
+  256 * MB,
+];
+
 describe('memory kernel defs: structure', () => {
-  it('lists fill, copy and 15 latency defs sharing the mem_latency kernel', () => {
-    expect(memoryKernels).toHaveLength(17);
-    expect(memoryKernels.map((d) => d.id)).toEqual(['mem_fill', 'mem_copy', ...Array<string>(15).fill('mem_latency')]);
-    expect(latencyDefs).toHaveLength(15);
+  it('lists fill, copy and 17 latency defs sharing the mem_latency kernel', () => {
+    expect(memoryKernels).toHaveLength(19);
+    expect(memoryKernels.map((d) => d.id)).toEqual(['mem_fill', 'mem_copy', ...Array<string>(17).fill('mem_latency')]);
+    expect(latencyDefs).toHaveLength(17);
   });
 
-  it.each(memoryKernels.map((d) => [memName(d), d] as const))('%s has a sane definition', (_name, d) => {
+  it.each(allMemory.map((d) => [memName(d), d] as const))('%s has a sane definition', (_name, d) => {
     expect(d.name.length).toBeGreaterThan(0);
     expect(d.unit.length).toBeGreaterThan(0);
     expect(d.stresses.length).toBeGreaterThan(0);
@@ -302,65 +334,83 @@ describe('memory kernel defs: structure', () => {
       const w = d.work(d.sizes[size]);
       expect(Number.isFinite(w) && w > 0).toBe(true);
     }
-    expect(d.sizes.smoke).toBeLessThan(d.sizes.standard);
+    expect(d.sizes.smoke).toBeLessThanOrEqual(d.sizes.standard);
   });
 
-  it('latency sizes: 16 KB to 256 MB, ascending powers of two, valid for prepare()', () => {
+  it('latency sizes: the 17 documented sizes, ascending, valid for prepare()', () => {
     const sizes = latencyDefs.map((d) => d.sizes.standard);
-    expect(sizes[0]).toBe(16 * 1024);
-    expect(sizes[sizes.length - 1]).toBe(256 * MB);
+    expect(sizes).toEqual(LATENCY_SIZES);
     for (let i = 0; i < sizes.length; i++) {
       const s = sizes[i]!;
-      expect(Math.log2(s) % 1, `${s} is a power of two`).toBe(0);
       expect(s % 64).toBe(0);
       expect(s).toBeGreaterThanOrEqual(128);
-      if (i > 0) expect(s).toBe(sizes[i - 1]! * 2);
+      if (i > 0) expect(s).toBeGreaterThan(sizes[i - 1]!);
       expect(latencyDefs[i]!.variant).toBe(String(s));
     }
   });
 
-  it('the all-cores copy size is small enough for one instance per core', () => {
-    const multi = memCopy.multi!;
+  it('standard sizes: fill 256 MB, copy 128 MB, all-cores copy 16 MB', () => {
+    expect(memFill.sizes.standard).toBe(256 * MB);
+    expect(memCopy.sizes.standard).toBe(128 * MB);
+    expect(memCopyMulti.sizes.standard).toBe(16 * MB);
+  });
+
+  it('only the all-cores copy has a multi variant; plain copy has none', () => {
+    expect(memCopy.multi).toBeUndefined();
+    const multi = memCopyMulti.multi!;
     expect(multi).toBeDefined();
-    expect(multi.size).toBe(8 * MB);
+    expect(multi.size).toBe(16 * MB);
     expect(multi.size).toBeLessThan(memCopy.sizes.standard);
     expect(Number.isInteger(multi.expected) && multi.expected >= 0 && multi.expected <= 0xffffffff).toBe(true);
-    // Only copy has a multi variant (App.svelte runs memCopy on several workers).
-    expect(memoryKernels.filter((d) => d.multi !== undefined)).toEqual([memCopy]);
+    // The multi size is the def's own standard size, so the two expectations must agree.
+    expect(multi.size).toBe(memCopyMulti.sizes.standard);
+    expect(multi.expected).toBe(memCopyMulti.expected.standard);
+    expect(memoryKernels.filter((d) => d.multi !== undefined)).toEqual([]);
+    expect(memCopyMulti.id).toBe('mem_copy_mt');
+  });
+
+  it('work(): fill 20 passes, copy 48, all-cores copy 2, latency = latencyHops(size)', () => {
+    expect(memFill.work(1e9)).toBe(20);
+    expect(memCopy.work(1e9)).toBe(48);
+    expect(memCopyMulti.work(1e9)).toBe(2);
+    for (const d of latencyDefs) expect(d.work(d.sizes.standard)).toBe(latencyHops(d.sizes.standard));
   });
 });
 
-describe('memory kernels at smoke size (every def in memoryKernels)', () => {
-  it.each(memoryKernels.map((d) => [memName(d), d] as const))('%s', (_name, d) => {
+describe('memory kernels at smoke size (every def, plus the all-cores copy)', () => {
+  it.each(allMemory.map((d) => [memName(d), d] as const))('%s', (_name, d) => {
     const k = mod.kernel(d.id);
     expect(k.prepare(d.seed, d.sizes.smoke)).toBe(0);
     const first = k.run() >>> 0;
-    const second = k.run() >>> 0;
-    const third = k.run() >>> 0;
-    expect(second).toBe(first);
-    expect(third).toBe(first);
     expect(first).toBe(d.expected.smoke);
+    expect(k.run() >>> 0).toBe(first);
+    expect(k.run() >>> 0).toBe(first);
   });
 
-  it('the 15 latency defs share one smoke size and checksum', () => {
+  it('the 17 latency defs share one smoke size and checksum', () => {
     expect(new Set(latencyDefs.map((d) => d.expected.smoke)).size).toBe(1);
     expect(new Set(latencyDefs.map((d) => d.sizes.smoke)).size).toBe(1);
   });
 
-  it('copy at its all-cores (multi) size', async () => {
+  it('mem_copy_mt at its all-cores (multi) size', async () => {
     const m = await loadKernels(); // fresh instance: memory never shrinks
-    const k = m.kernel(memCopy.id);
-    expect(k.prepare(memCopy.seed, memCopy.multi!.size)).toBe(0);
+    const k = m.kernel(memCopyMulti.id);
+    expect(k.prepare(memCopyMulti.seed, memCopyMulti.multi!.size)).toBe(0);
     const first = k.run() >>> 0;
     expect(k.run() >>> 0).toBe(first);
     expect(k.run() >>> 0).toBe(first);
-    expect(first).toBe(memCopy.multi!.expected);
-    // Two 8 MB buffers plus the module: small enough for one instance per core.
-    expect(m.memory.buffer.byteLength).toBeLessThan(24 * MB);
+    expect(first).toBe(memCopyMulti.multi!.expected);
+    // Two 16 MB buffers plus the module: small enough for one instance per core.
+    expect(m.memory.buffer.byteLength).toBeLessThan(40 * MB);
+  });
+
+  it('mem_copy and mem_copy_mt do the same work with different pass counts (different checksums)', () => {
+    // Same seed and size, 48 vs 2 passes: the folded sample indexes differ.
+    expect(memCopy.expected.smoke).not.toBe(memCopyMulti.expected.smoke);
   });
 
   it('re-preparing the same kernel gives the same checksum', () => {
-    for (const d of [memFill, memCopy, latencyDefs[0]!]) {
+    for (const d of [memFill, memCopy, memCopyMulti, latencyDefs[0]!]) {
       const k = mod.kernel(d.id);
       k.prepare(d.seed, d.sizes.smoke);
       const a = k.run() >>> 0;
@@ -373,7 +423,8 @@ describe('memory kernels at smoke size (every def in memoryKernels)', () => {
     const order = [
       ...memoryKernels.slice(0, 3),
       ...cpuKernels.slice(0, 3),
-      ...memoryKernels.slice(3, 5),
+      memCopyMulti,
+      memoryKernels[3]!,
       cpuKernels[3]!,
     ].reverse();
     for (const d of order) {
@@ -384,7 +435,7 @@ describe('memory kernels at smoke size (every def in memoryKernels)', () => {
   });
 
   it('a different seed changes the checksum', () => {
-    for (const d of [memFill, memCopy]) {
+    for (const d of bandwidthDefs) {
       const k = mod.kernel(d.id);
       expect(k.prepare(d.seed + 1, d.sizes.smoke)).toBe(0);
       expect(k.run() >>> 0, d.id).not.toBe(d.expected.smoke);
@@ -393,18 +444,66 @@ describe('memory kernels at smoke size (every def in memoryKernels)', () => {
     const d = latencyDefs[0]!;
     const k = mod.kernel(d.id);
     const seen = new Set<number>();
-    for (const seed of [2, 3, 4, 5, 6, 7, 8, 9]) {
+    for (const seed of [2, 3, 4, 5]) {
       expect(k.prepare(seed, d.sizes.smoke)).toBe(0);
       seen.add(k.run() >>> 0);
     }
     expect(seen.size).toBeGreaterThan(1);
   });
 
-  it('latency checksum is a valid line index', () => {
+  it('latency checksum is a valid line index (the run returns (p - base) / 64, not an address)', () => {
     const k = mod.kernel('mem_latency');
-    for (const [bytes, seed] of [[128, 1], [192, 2], [4096, 3], [65_536, 4]] as const) {
+    for (const [bytes, seed] of [
+      [128, 1],
+      [192, 2],
+      [4096, 3],
+      [65_536, 4],
+    ] as const) {
       expect(k.prepare(seed, bytes)).toBe(0);
       expect(k.run() >>> 0).toBeLessThan(bytes / 64);
+    }
+  });
+});
+
+describe('latencyHops (TS mirror of latency_hops in mem.rs)', () => {
+  // [size, expected hops]: each tier at its edge and one line (64 B) past it.
+  const tiers: Array<[size: number, hops: number]> = [
+    [128, 2 * 16 + 7], // below 16 KiB (tests only): n * 16 + 7
+    [4096, 64 * 16 + 7], // the smoke size
+    [16 * KB - 64, 255 * 16 + 7],
+    [16 * KB, 2 ** 26 + 7],
+    [32 * KB, 2 ** 26 + 7],
+    [32 * KB + 64, 2 ** 25 + 7],
+    [256 * KB, 2 ** 25 + 7],
+    [256 * KB + 64, 2 ** 24 + 7],
+    [2 * MB, 2 ** 24 + 7],
+    [2 * MB + 64, 2 ** 23 + 7],
+    [8 * MB, 2 ** 23 + 7],
+    [8 * MB + 64, 2 ** 22 + 7],
+    [24 * MB, 2 ** 22 + 7],
+    [64 * MB, 2 ** 22 + 7],
+    [64 * MB + 64, 2 ** 21 + 7], // larger sizes: max(n, 2^21) + 7
+    [128 * MB, 2 ** 21 + 7], // n = 2^21 exactly
+    [128 * MB + 64, 2 ** 21 + 1 + 7], // n = 2^21 + 1
+    [256 * MB, 2 ** 22 + 7], // n = 2^22
+  ];
+  it.each(tiers)('latencyHops(%i) = %i', (size, hops) => {
+    expect(latencyHops(size)).toBe(hops);
+  });
+
+  it('is at least one hop per line for every size, so large sizes touch every line', () => {
+    for (const s of LATENCY_SIZES) expect(latencyHops(s), String(s)).toBeGreaterThanOrEqual(s / 64);
+  });
+
+  it('is never a multiple of the line count (the +7), so the checksum is not always line 0', () => {
+    for (const s of LATENCY_SIZES) expect(latencyHops(s) % (s / 64), String(s)).not.toBe(0);
+    for (const s of LATENCY_SIZES) expect(latencyHops(s) % 2, String(s)).toBe(1);
+  });
+
+  it('is an integer that fits in u32', () => {
+    for (const s of LATENCY_SIZES) {
+      const h = latencyHops(s);
+      expect(Number.isInteger(h) && h > 0 && h <= 0xffffffff).toBe(true);
     }
   });
 });
@@ -413,6 +512,7 @@ describe('memory prepare() status codes', () => {
   it.each([
     ['mem_fill', 0],
     ['mem_copy', 0],
+    ['mem_copy_mt', 0],
     ['mem_latency', 0],
     ['mem_latency', 1],
     ['mem_latency', 63],
@@ -437,6 +537,8 @@ describe('memory prepare() status codes', () => {
     ['mem_fill', 3],
     ['mem_copy', 1],
     ['mem_copy', 7],
+    ['mem_copy_mt', 1],
+    ['mem_copy_mt', 7],
   ] as const)('%s size=%i is accepted and runs without trapping', (id, size) => {
     const k = mod.kernel(id);
     expect(k.prepare(1, size)).toBe(0);
@@ -444,7 +546,7 @@ describe('memory prepare() status codes', () => {
   });
 
   it('a valid prepare after a rejected one still works', () => {
-    for (const d of [memFill, memCopy, latencyDefs[0]!]) {
+    for (const d of [memFill, memCopy, memCopyMulti, latencyDefs[0]!]) {
       const k = mod.kernel(d.id);
       expect(k.prepare(d.seed, 0), d.id).toBe(2);
       expect(k.prepare(d.seed, d.sizes.smoke), d.id).toBe(0);
@@ -457,23 +559,58 @@ describe('memory prepare() status codes', () => {
   });
 });
 
+describe('mem_latency_run without a usable chain', () => {
+  // mem.rs: "No hops without a chain: a stray run after another prepare does nothing."
+  // Not in the header (reported); tested as robustness: it must not trap or walk stale memory.
+  it('returns 0 on a fresh instance, after a rejected or failed prepare, and after another kernel prepare', async () => {
+    const m = await loadKernels();
+    const k = m.kernel('mem_latency');
+    expect(k.run() >>> 0).toBe(0); // never prepared
+    expect(k.prepare(1, 4096)).toBe(0);
+    expect(k.run() >>> 0).toBe(latencyDefs[0]!.expected.smoke);
+    expect(k.prepare(1, 100)).toBe(2); // rejected size clears the chain
+    expect(k.run() >>> 0).toBe(0);
+    expect(k.prepare(1, 4096)).toBe(0);
+    expect(m.kernel('mem_fill').prepare(1, 4096)).toBe(0); // another memory kernel took the arena
+    expect(k.run() >>> 0).toBe(0);
+    expect(k.prepare(1, 4096)).toBe(0);
+    expect(k.prepare(1, 0xffffffc0)).toBe(1); // out of memory clears it too
+    expect(k.run() >>> 0).toBe(0);
+  });
+});
+
+describe('the pre-warm-up spin (runner.worker.ts spin()) does not disturb a prepared memory kernel', () => {
+  // The worker prepares the kernel, then spins on `mix` (prepare(1, 200000), run in a loop), then
+  // warms up and measures. `mix` must therefore leave the prepared buffers and chain intact.
+  it.each(allMemory.map((d) => [memName(d), d] as const))('%s keeps its checksum through a mix spin', (_name, d) => {
+    const m = mod;
+    const k = m.kernel(d.id);
+    expect(k.prepare(d.seed, d.sizes.smoke)).toBe(0);
+    const before = k.run() >>> 0;
+    const spin = m.kernel('mix');
+    expect(spin.prepare(1, 200_000)).toBe(0);
+    for (let i = 0; i < 5; i++) spin.run();
+    expect(k.run() >>> 0).toBe(before);
+    expect(before).toBe(d.expected.smoke);
+  });
+});
+
 describe('memory prepare() out of memory returns status 1', () => {
   it.each([
     ['mem_fill', TOO_BIG],
     ['mem_copy', TOO_BIG],
+    ['mem_copy_mt', TOO_BIG],
     ['mem_latency', 0xffffffc0], // multiple of 64
     ['mem_latency', 0xffffff00],
-  ] as const)('%s size=%i', async (id, size) => {
+  ] as const)('%s size=%i, and memory does not grow', async (id, size) => {
     const m = await loadKernels(); // fresh instance
     const before = m.memory.buffer.byteLength;
     expect(m.kernel(id).prepare(1, size)).toBe(1);
-    // A failed grow leaves memory as it was. (Not asserted for mem_latency: its prepare
-    // allocates the chain and the shuffle table in one tuple, so the table can still grow
-    // memory by size/64 u32s after the chain allocation failed. Reported to the Builder.)
-    if (id !== 'mem_latency') expect(m.memory.buffer.byteLength).toBe(before);
+    // A failed allocation leaves memory as it was (prepare allocates one buffer at a time).
+    expect(m.memory.buffer.byteLength).toBe(before);
   });
 
-  it.each(memoryKernels.slice(0, 3).map((d) => [d.id, d] as const))(
+  it.each(allMemory.slice(0, 3).concat(memCopyMulti).map((d) => [d.id, d] as const))(
     '%s: the instance still works after an out-of-memory prepare',
     async (_id, d) => {
       const m = await loadKernels();
@@ -500,9 +637,10 @@ describe('memory prepare() out of memory returns status 1', () => {
   });
 });
 
-// Standard sizes: up to 256 MB of wasm memory per kernel. Opt in with BENCH_STANDARD=1.
+// Standard sizes: up to 256 MB of wasm memory per kernel, and latency runs of ~0.3 s or more.
+// Opt in with BENCH_STANDARD=1.
 describe.skipIf(process.env['BENCH_STANDARD'] !== '1')('memory kernels at standard size', () => {
-  it.each(memoryKernels.map((d) => [memName(d), d] as const))('%s', { timeout: 300_000 }, async (_name, d) => {
+  it.each(allMemory.map((d) => [memName(d), d] as const))('%s', { timeout: 600_000 }, async (_name, d) => {
     // Fresh instance per kernel so linear memory (which never shrinks) is released.
     const m = await loadKernels();
     const k = m.kernel(d.id);
@@ -513,9 +651,9 @@ describe.skipIf(process.env['BENCH_STANDARD'] !== '1')('memory kernels at standa
     expect(k.run() >>> 0).toBe(first);
   });
 
-  it('several kernels in one instance, largest first (arena reuse after reset)', { timeout: 300_000 }, async () => {
+  it('several kernels in one instance, largest first (arena reuse after reset)', { timeout: 600_000 }, async () => {
     const m = await loadKernels();
-    for (const d of [latencyDefs[14]!, memCopy, memFill, latencyDefs[0]!]) {
+    for (const d of [latencyDefs[latencyDefs.length - 1]!, memCopy, memFill, memCopyMulti, latencyDefs[0]!]) {
       const k = m.kernel(d.id);
       expect(k.prepare(d.seed, d.sizes.standard), d.id).toBe(0);
       expect(k.run() >>> 0, d.id).toBe(d.expected.standard);

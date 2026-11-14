@@ -720,3 +720,30 @@ describe('startRun', () => {
     });
   });
 });
+
+describe('spinBeforeMs (docs/SPEC.md 5.3: latency sizes spin before warm-up)', () => {
+  it('a def with spinBeforeMs puts spinMs in its run request', async () => {
+    const defs = [fakeDef('a', { spinBeforeMs: 150 })];
+    const w = new FakeWorker(wellBehaved(defs));
+    await start(w, { kernels: defs, size: 'smoke', mode: 'quick' }).done;
+    expect(w.runs).toHaveLength(1);
+    expect(w.runs[0]!.spinMs).toBe(150);
+    // The init spin is separate and still comes from the options.
+    expect(w.inits[0]!.spinMs).toBe(0);
+  });
+
+  it('a def without it sends no spinMs (a def with 0 neither)', async () => {
+    const defs = [fakeDef('a'), fakeDef('b', { spinBeforeMs: 0 })];
+    const w = new FakeWorker(wellBehaved(defs));
+    await start(w, { kernels: defs, size: 'smoke', mode: 'quick' }).done;
+    expect(w.runs).toHaveLength(2);
+    for (const r of w.runs) expect('spinMs' in r).toBe(false);
+  });
+
+  it('only the defs that ask for it spin, in a mixed list', async () => {
+    const defs = [fakeDef('a'), fakeDef('b', { spinBeforeMs: 40 }), fakeDef('c')];
+    const w = new FakeWorker(wellBehaved(defs));
+    await start(w, { kernels: defs, size: 'smoke', mode: 'quick' }).done;
+    expect(w.runs.map((r) => r.spinMs)).toEqual([undefined, 40, undefined]);
+  });
+});

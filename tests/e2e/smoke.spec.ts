@@ -470,11 +470,17 @@ test.describe('M2 all cores', () => {
 
 test.describe('M3 memory', () => {
   const DASH = '—';
-  // Working-set sizes of the latency curve, in bytes (src/lib/bench/memory/index.ts): 16 KB ... 256 MB.
-  const LATENCY_SIZES = Array.from({ length: 15 }, (_, i) => 2 ** (14 + i));
-  // 2 bandwidth rows + 1 all-cores row + 15 latency rows.
+  const KB = 1024;
+  const MB = 1024 * KB;
+  // Working-set sizes of the latency curve, in bytes (src/lib/bench/memory/index.ts): 17 points, 16 KB ... 256 MB.
+  const LATENCY_SIZES = [
+    16 * KB, 32 * KB, 64 * KB, 128 * KB, 256 * KB, 512 * KB, 1 * MB, 2 * MB, 4 * MB, 8 * MB,
+    12 * MB, 16 * MB, 24 * MB, 32 * MB, 64 * MB, 128 * MB, 256 * MB,
+  ];
+  const MULTI_ROW = 'mem-row-mem_copy_mt-multi';
+  // 2 bandwidth rows + 1 all-cores row + 17 latency rows.
   const MEMORY_CHECKS = 3 + LATENCY_SIZES.length;
-  // Progress counts kernels: fill, copy, 15 latency points, then all-cores copy.
+  // Progress counts kernels: fill, copy, 17 latency points, then all-cores copy.
   const MEMORY_STEPS = 2 + LATENCY_SIZES.length + 1;
 
   async function onlyMemory(page: Page) {
@@ -511,9 +517,16 @@ test.describe('M3 memory', () => {
     await expect(workers).toBeEnabled();
     const n = Number(await workers.inputValue());
     expect(Number.isInteger(n) && n >= 1).toBe(true);
-    // Still there with cpu-multi added, and gone only when neither needs it.
+    // One input, below the whole component list (not tucked under the cpu-multi line).
+    const wbox = (await workers.boundingBox())!;
+    for (const id of ['cpu-single', 'cpu-multi', 'memory', 'gpu', 'storage']) {
+      const box = (await page.getByTestId(`component-${id}`).boundingBox())!;
+      expect(wbox.y, id).toBeGreaterThan(box.y);
+    }
+    // Still there, still one, with cpu-multi added, and gone only when neither needs it.
     await page.getByTestId('component-cpu-multi').check();
     await expect(workers).toBeVisible();
+    await expect(page.getByTestId('workers')).toHaveCount(1);
     await page.getByTestId('component-memory').uncheck();
     await expect(workers).toBeVisible();
     await page.getByTestId('component-cpu-multi').uncheck();
@@ -532,7 +545,7 @@ test.describe('M3 memory', () => {
     await expect(page.getByTestId('run')).toBeEnabled();
   });
 
-  test('smoke run of Memory only: all rows, 15 latency rows, valid checksums, a drawn chart', async ({ page }) => {
+  test('smoke run of Memory only: all rows, 17 latency rows, valid checksums, a drawn chart', async ({ page }) => {
     await page.goto('/?smoke');
     await onlyMemory(page);
     await page.getByTestId('workers').fill('2');
@@ -551,20 +564,28 @@ test.describe('M3 memory', () => {
     // Bandwidth rows: fill and copy single-core, copy all-cores, in that order.
     await expect(page.getByTestId('mem-row-mem_fill')).toHaveCount(1);
     await expect(page.getByTestId('mem-row-mem_copy')).toHaveCount(1);
-    await expect(page.getByTestId('mem-row-mem_copy-multi')).toHaveCount(1);
+    await expect(page.getByTestId(MULTI_ROW)).toHaveCount(1);
     const memRows = await page
       .locator('[data-testid^="mem-row-"]')
       .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
-    expect(memRows).toEqual(['mem-row-mem_fill', 'mem-row-mem_copy', 'mem-row-mem_copy-multi']);
+    expect(memRows).toEqual(['mem-row-mem_fill', 'mem-row-mem_copy', MULTI_ROW]);
     await expect(page.getByTestId('mem-row-mem_fill')).toContainText('1 core');
-    await expect(page.getByTestId('mem-row-mem_copy-multi')).toContainText('2 workers');
+    await expect(page.getByTestId('mem-row-mem_copy')).toContainText('counted once');
+    await expect(page.getByTestId(MULTI_ROW)).toContainText('2 workers');
+    await expect(page.getByTestId(MULTI_ROW)).toContainText('counted once');
+    // Fewer than 8 workers: the row warns that the total may fit in cache.
+    await expect(page.getByTestId(MULTI_ROW)).toContainText('few workers');
 
-    // 15 latency rows, one per size, ascending.
+    // 17 latency rows, one per size, ascending (12 MB and 24 MB included).
     const latencyRows = await page
       .locator('[data-testid^="latency-row-"]')
       .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
     expect(latencyRows).toEqual(LATENCY_SIZES.map((s) => `latency-row-${s}`));
     await expect(page.getByTestId('latency-row-16384')).toContainText('16 KB');
+    await expect(page.getByTestId('latency-row-12582912')).toContainText('12 MB');
+    await expect(page.getByTestId('latency-row-25165824')).toContainText('24 MB');
+    // A smoke run measures 4 KB at every point; the labels say so.
+    for (const s of LATENCY_SIZES) await expect(page.getByTestId(`latency-row-${s}`), String(s)).toContainText('smoke run: 4 KB');
     await expect(page.getByTestId('latency-row-268435456')).toContainText('256 MB');
 
     // Every checksum cell is valid and ok.
@@ -576,7 +597,7 @@ test.describe('M3 memory', () => {
       await expect(cell).toHaveText(/^(ok|noisy)$/);
     }
     // Per section too, so a missing section cannot hide behind another's cells.
-    for (const id of ['mem-row-mem_fill', 'mem-row-mem_copy', 'mem-row-mem_copy-multi']) {
+    for (const id of ['mem-row-mem_fill', 'mem-row-mem_copy', MULTI_ROW]) {
       await expect(page.getByTestId(id).getByTestId('checksum'), id).toHaveAttribute('data-valid', 'true');
     }
     for (const s of LATENCY_SIZES) {
