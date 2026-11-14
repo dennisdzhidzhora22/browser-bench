@@ -59,6 +59,8 @@ export interface RunOptions {
   beforeKernel?: (index: number, def: KernelDef) => Promise<void> | void;
   /** Called after each kernel finishes. */
   afterKernel?: (index: number, outcome: KernelOutcome) => void;
+  /** Called once the worker is ready, with whatever it reports about itself (GPU: adapter). */
+  onReady?: (info: Record<string, string>) => void;
   /** Injection points for tests. */
   makeWorker?: () => Worker;
   loadModule?: () => Promise<WebAssembly.Module>;
@@ -78,6 +80,13 @@ export interface Run<T = KernelOutcome> {
 
 export function createWorker(): Worker {
   return new Worker(new URL('../../workers/runner.worker.ts', import.meta.url), {
+    type: 'module',
+  });
+}
+
+/** Worker for GPU tests (WebGPU, or WebGL2 fallback). Same protocol. */
+export function createGpuWorker(): Worker {
+  return new Worker(new URL('../../workers/gpu.worker.ts', import.meta.url), {
     type: 'module',
   });
 }
@@ -139,6 +148,7 @@ export function startRun(opts: RunOptions): Run {
       if (cancelled) throw new Cancelled();
       const ready = await send({ type: 'init', module, spinMs: opts.spinMs ?? SPIN_MS });
       if (ready.type === 'error') throw new Error(`worker init failed: ${ready.message}`);
+      if (ready.type === 'ready') opts.onReady?.(ready.info ?? {});
 
       const outcomes: KernelOutcome[] = [];
       for (let i = 0; i < opts.kernels.length; i++) {
@@ -157,6 +167,7 @@ export function startRun(opts: RunOptions): Run {
           size,
           ...plan,
           ...(def.spinBeforeMs ? { spinMs: def.spinBeforeMs } : {}),
+          ...(def.targetMs && opts.size !== 'smoke' ? { targetMs: def.targetMs } : {}),
         });
         const hidden =
           hiddenAtStart || visibility.hiddenNow() || visibility.losses() !== lossesBefore;
@@ -212,15 +223,18 @@ export function resultToOutcome(
   const seconds = stats.median / 1000;
   const checksumOk = r.checksumConsistent && r.checksum === def.expected[sizeId] >>> 0;
   const valid = checksumOk && !hidden;
+  const reps = r.reps ?? 1;
   const error = !checksumOk
-    ? 'checksum mismatch: result invalid'
+    ? r.detail
+      ? `output check failed: ${r.detail}`
+      : 'checksum mismatch: result invalid'
     : hidden
       ? 'tab was hidden during this test: result discarded'
       : undefined;
   return {
     def,
     stats,
-    throughput: seconds > 0 ? def.work(size) / seconds : undefined,
+    throughput: seconds > 0 ? (def.work(size) * reps) / seconds : undefined,
     samples: r.times.length,
     checksumOk,
     hidden,

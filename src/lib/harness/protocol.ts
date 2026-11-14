@@ -40,6 +40,11 @@ export interface RunRequest {
   maxMs: number;
   /** Busy-spin after prepare, before warm-up. Optional; default 0. */
   spinMs?: number;
+  /**
+   * GPU worker only: repeat the test to fill about this many ms per sample.
+   * Absent or 0 = one repetition per sample.
+   */
+  targetMs?: number;
 }
 
 // ── All-cores test (docs/SPEC.md, 3.2) ─────────────────────────────────────
@@ -151,6 +156,8 @@ export type ToWorker = InitRequest | RunRequest | PrepareRequest | MeasureReques
 export interface Ready {
   type: 'ready';
   abi: number;
+  /** GPU worker: which API it got and the adapter description, for the results page. */
+  info?: Record<string, string>;
 }
 
 export interface RunResult {
@@ -165,6 +172,10 @@ export interface RunResult {
   prepareMs: number;
   /** Milliseconds per sample, in the order taken. Transferred, not copied. */
   times: Float64Array;
+  /** Repetitions of the test per sample (GPU). Absent = 1. */
+  reps?: number;
+  /** Why validation failed, when it did (GPU). */
+  detail?: string;
 }
 
 export interface WorkerError {

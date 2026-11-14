@@ -31,6 +31,12 @@ export interface KernelDef {
   /** Busy-spin this long after prepare, before warm-up (single-core runs). */
   spinBeforeMs?: number;
   /**
+   * GPU tests: the worker repeats the test to fill a sample of about this many
+   * ms (calibrated once, then fixed), and `work` is per repetition. Not used
+   * at smoke size (one repetition).
+   */
+  targetMs?: number;
+  /**
    * Size for the all-cores test, when `standard` uses too much memory to run
    * one instance per core (target: under ~16 MB of wasm memory per instance).
    * Short runs are fine there: the all-cores harness repeats `run` to fill

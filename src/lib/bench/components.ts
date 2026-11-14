@@ -1,5 +1,6 @@
 // The components a user can select. Kernels are filled in per milestone.
 import { cpuKernels } from './cpu/index.ts';
+import { gpuKernels } from './gpu/index.ts';
 import { memoryKernels } from './memory/index.ts';
 import type { ComponentId, KernelDef } from './types.ts';
 
@@ -14,6 +15,7 @@ export const components: readonly ComponentDef[] = [
   { id: 'cpu-single', name: 'CPU — single core', kernels: cpuKernels },
   { id: 'cpu-multi', name: 'CPU — all cores', kernels: cpuKernels },
   { id: 'memory', name: 'Memory', kernels: memoryKernels },
-  { id: 'gpu', name: 'GPU', kernels: [] },
+  // The page runs either the WebGPU tests or the WebGL2 fallback, never both.
+  { id: 'gpu', name: 'GPU', kernels: gpuKernels },
   { id: 'storage', name: 'Storage', kernels: [] },
 ];

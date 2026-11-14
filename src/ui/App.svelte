@@ -4,10 +4,18 @@
   import type { ComponentId, KernelDef, SizeId } from '../lib/bench/types.ts';
   import {
     Cancelled,
+    createGpuWorker,
     startRun,
     type KernelOutcome,
     type RunMode,
   } from '../lib/harness/orchestrator.ts';
+  import {
+    detectGpuApi,
+    fallbackKernels,
+    webgpuKernels,
+    type GpuApi,
+  } from '../lib/bench/gpu/index.ts';
+  import GpuResults from './GpuResults.svelte';
   import {
     clampWorkers,
     MAX_WORKERS_PER_CORE,
@@ -49,16 +57,20 @@
   let multiOutcomes: MultiOutcome[] = $state([]);
   let memOutcomes: KernelOutcome[] = $state([]);
   let memMulti: MultiOutcome[] = $state([]);
+  let gpuOutcomes: KernelOutcome[] = $state([]);
+  let gpuInfo: Record<string, string> = $state({});
+  let gpuApi: GpuApi | undefined = $state();
   let active: { cancel(): void } | undefined;
   let cancelRequested = false;
 
   /** Kernels run on several workers: the all-cores CPU test, and all-cores copy. */
   const multiKernels = (id: ComponentId): readonly KernelDef[] =>
     id === 'memory' ? [memCopyMulti] : [];
-  const steps = (id: ComponentId, kernels: readonly KernelDef[]) =>
-    kernels.length + multiKernels(id).length;
+  /** Kernels a component will actually run (GPU depends on the API this browser offers). */
+  const kernelsFor = (id: ComponentId, all: readonly KernelDef[], api: GpuApi | undefined) =>
+    id !== 'gpu' ? all : api === 'webgpu' ? webgpuKernels : api === 'webgl2' ? fallbackKernels : [];
   const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
-  const totalKernels = $derived(toRun.reduce((n, c) => n + steps(c.id, c.kernels), 0));
+  const anySelected = $derived(toRun.length > 0);
   const needsWorkers = $derived(selected['cpu-multi'] || selected.memory);
 
   /** Lets Svelte flush and the browser paint before the next kernel starts. */
@@ -81,14 +93,20 @@
   }
 
   async function run() {
-    const plan = toRun;
-    const total = totalKernels;
-    if (total === 0) return;
+    const chosen = toRun;
+    if (chosen.length === 0) return;
     outcomes = [];
     multiOutcomes = [];
     memOutcomes = [];
     memMulti = [];
+    gpuOutcomes = [];
+    gpuInfo = {};
     cancelRequested = false;
+    phase = { kind: 'running', index: 0, total: 0, current: 'starting' };
+    // Before any measurement: which GPU API to use decides the GPU test list.
+    if (chosen.some((c) => c.id === 'gpu')) gpuApi = await detectGpuApi();
+    const plan = chosen.map((c) => ({ ...c, kernels: kernelsFor(c.id, c.kernels, gpuApi) }));
+    const total = plan.reduce((n, c) => n + c.kernels.length + multiKernels(c.id).length, 0);
     phase = { kind: 'running', index: 0, total, current: 'starting' };
     let offset = 0;
     const hook = (name: string) => {
@@ -98,13 +116,20 @@
         await settle();
       };
     };
-    const single = async (name: string, kernels: readonly KernelDef[], out: KernelOutcome[]) => {
+    const single = async (
+      name: string,
+      kernels: readonly KernelDef[],
+      out: KernelOutcome[],
+      gpu = false,
+    ) => {
+      if (kernels.length === 0) return;
       const r = startRun({
         kernels,
         size,
         mode,
         beforeKernel: hook(name),
         afterKernel: (_i, o) => void out.push(o),
+        ...(gpu ? { makeWorker: createGpuWorker, onReady: (info) => (gpuInfo = info) } : {}),
       });
       active = r;
       await r.done;
@@ -132,7 +157,8 @@
           await single(c.name, c.kernels, memOutcomes);
           if (cancelRequested) throw new Cancelled();
           await multi(c.name, multiKernels('memory'), memMulti);
-        } else await single(c.name, c.kernels, outcomes);
+        } else if (c.id === 'gpu') await single(c.name, c.kernels, gpuOutcomes, true);
+        else await single(c.name, c.kernels, outcomes);
       }
       phase = { kind: 'done' };
     } catch (err) {
@@ -215,7 +241,7 @@
         {phase.index + 1} / {phase.total} · {phase.current}
       </span>
     {:else}
-      <button onclick={run} disabled={totalKernels === 0 || (needsWorkers && workerCount === undefined)} data-testid="run"
+      <button onclick={run} disabled={!anySelected || (needsWorkers && workerCount === undefined)} data-testid="run"
         >Run</button
       >
       {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
@@ -240,6 +266,11 @@
   {#if memOutcomes.length > 0 || memMulti.length > 0}
     <h2>Memory</h2>
     <MemoryResults outcomes={memOutcomes} multi={memMulti} smoke={size === 'smoke'} />
+  {/if}
+
+  {#if gpuOutcomes.length > 0 || (gpuApi === 'none' && selected.gpu && phase.kind !== 'idle')}
+    <h2>GPU</h2>
+    <GpuResults outcomes={gpuOutcomes} info={gpuInfo} api={gpuApi} />
   {/if}
 
   <p class="muted note">
