@@ -8,12 +8,14 @@ import {
 } from '../../src/lib/harness/orchestrator.ts';
 import {
   BASELINE_MAX_MS,
+  BASELINE_WINDOW_MS,
   clampWorkers,
   defaultMaxWorkers,
   MAX_WORKERS_PER_CORE,
   MEASURE_SPIN_MS,
   multiSize,
   startMultiRun,
+  WEAK_BASELINE_MARGIN,
   WINDOW_MS,
   type MultiOptions,
 } from '../../src/lib/harness/multi.ts';
@@ -99,6 +101,8 @@ describe('constants', () => {
     expect(WINDOW_MS.quick).toBeGreaterThan(0);
     expect(WINDOW_MS.full).toBeGreaterThan(WINDOW_MS.quick);
     expect(BASELINE_MAX_MS).toBe(1_000);
+    expect(BASELINE_WINDOW_MS).toBe(300);
+    expect(WEAK_BASELINE_MARGIN).toBe(0.05);
     expect(MEASURE_SPIN_MS).toBeGreaterThan(0);
     expect(MAX_WORKERS_PER_CORE).toBeGreaterThanOrEqual(1);
   });
@@ -347,28 +351,42 @@ describe('startMultiRun', () => {
       }
     });
 
-    it('both measures carry windowMs and spinMs; there is no reps field any more', async () => {
+    it('the baseline spins MEASURE_SPIN_MS and the all-cores measure does not spin; no reps field', async () => {
       const { run, workersMade } = start({ kernels: [defs[0]!], size: 'standard', workers: 2, mode: 'full' });
       await run.done;
-      const measures = workersMade.flatMap((w) => w.of('measure'));
-      expect(measures).toHaveLength(3); // baseline on worker 0, then both workers
-      for (const m of measures) {
-        expect(m.windowMs).toBe(WINDOW_MS.full);
-        expect(m.spinMs).toBe(MEASURE_SPIN_MS);
-        expect(m).not.toHaveProperty('reps');
+      const [single, all] = workersMade[0]!.of('measure');
+      const peer = workersMade[1]!.of('measure');
+      expect(workersMade.flatMap((w) => w.of('measure'))).toHaveLength(3); // baseline, then both
+      expect(single!.spinMs).toBe(MEASURE_SPIN_MS);
+      expect(all!.spinMs).toBe(0);
+      expect(peer[0]!.spinMs).toBe(0);
+      for (const m of [single!, all!, peer[0]!]) expect(m).not.toHaveProperty('reps');
+    });
+
+    it('measureSpinMs overrides the baseline spin only', async () => {
+      const { run, workersMade } = start({ kernels: [defs[0]!], size: 'standard', workers: 2, measureSpinMs: 7 });
+      await run.done;
+      const [single, all] = workersMade[0]!.of('measure');
+      expect(single!.spinMs).toBe(7);
+      expect(all!.spinMs).toBe(0);
+    });
+
+    it('baseline window is at least BASELINE_WINDOW_MS; the all-cores window is the mode window', async () => {
+      for (const mode of ['quick', 'full'] as const) {
+        const { run, workersMade } = start({ kernels: [defs[0]!], size: 'standard', workers: 2, mode });
+        await run.done;
+        const [single, all] = workersMade[0]!.of('measure');
+        expect(all!.windowMs).toBe(WINDOW_MS[mode]);
+        expect(single!.windowMs).toBeGreaterThanOrEqual(BASELINE_WINDOW_MS);
+        expect(single!.windowMs).toBe(Math.max(WINDOW_MS[mode], BASELINE_WINDOW_MS));
+        expect(single!.windowMs).toBeGreaterThanOrEqual(all!.windowMs);
       }
     });
 
-    it('windowMs follows the mode at standard size and is 0 for smoke; measureSpinMs overrides the spin', async () => {
-      const q = start({ kernels: [defs[0]!], size: 'standard', workers: 1, mode: 'quick', measureSpinMs: 7 });
-      await q.run.done;
-      for (const m of q.workersMade[0]!.of('measure')) {
-        expect(m.windowMs).toBe(WINDOW_MS.quick);
-        expect(m.spinMs).toBe(7);
-      }
-      const smoke = start({ kernels: [defs[0]!], size: 'smoke', workers: 1, measureSpinMs: 0 });
-      await smoke.run.done;
-      for (const m of smoke.workersMade[0]!.of('measure')) {
+    it('smoke: both windows are 0 (the baseline minimum does not apply)', async () => {
+      const { run, workersMade } = start({ kernels: [defs[0]!], size: 'smoke', workers: 2, measureSpinMs: 0 });
+      await run.done;
+      for (const m of workersMade[0]!.of('measure')) {
         expect(m.windowMs).toBe(0);
         expect(m.spinMs).toBe(0);
       }
@@ -568,6 +586,135 @@ describe('startMultiRun', () => {
       const outcomes = await run.done;
       expect(outcomes.map((o) => o.valid)).toEqual([true, false, true]);
       expect(outcomes[1]!.error).toMatch(/no samples/);
+    });
+  });
+
+  describe('bestWorker and weakBaseline', () => {
+    /** Per-sample reps for a worker; every window is 100 ms. */
+    const repsBy =
+      (single: number, perWorker: (index: number, sample: number) => number): Timing =>
+      (count, index, s) => ({
+        t0: s * 1000,
+        t1: s * 1000 + 100,
+        reps: count === 1 ? single : perWorker(index, s),
+      });
+
+    it("bestWorker is the fastest single worker's median rate, in def.unit", async () => {
+      // Smoke work(10) = 20. Worker 0: 10 reps/100 ms = 10 ms/rep. Worker 1: 20 reps/100 ms = 5 ms/rep.
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'smoke', workers: 2 },
+        { timing: repsBy(10, (w) => (w === 0 ? 10 : 20)) },
+      );
+      const [o] = await run.done;
+      expect(o!.all!.bestWorker).toBeCloseTo(20 / 0.005, 6);
+      expect(o!.single!.bestWorker).toBeCloseTo(20 / 0.01, 6);
+      // The summed group throughput is separate: 0.1 + 0.2 reps/ms = 0.3 -> 3.333 ms/rep.
+      expect(o!.all!.throughput).toBeCloseTo(20 / (1 / 0.3 / 1000), 4);
+    });
+
+    it("bestWorker takes each worker's median over samples, so one odd sample does not win", async () => {
+      // Worker 1 does 20 reps in 3 samples but 1000 in two: ms/rep 5, 5, 5, 0.1, 0.1 -> median 5.
+      // Worker 0 is always 10 reps: median 10. Fastest median is worker 1's 5 ms/rep.
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'smoke', workers: 2 },
+        { samples: 5, timing: repsBy(10, (w, s) => (w === 0 ? 10 : s < 3 ? 20 : 1000)) },
+      );
+      const [o] = await run.done;
+      expect(o!.all!.bestWorker).toBeCloseTo(20 / 0.005, 6);
+    });
+
+    it('bestWorker is undefined when no worker has a usable duration', async () => {
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'smoke', workers: 2 },
+        { timing: (_c, _i, s) => ({ t0: s, t1: s, reps: 10 }) },
+      );
+      const [o] = await run.done;
+      expect(o!.all!.bestWorker).toBeUndefined();
+      expect(o!.single!.bestWorker).toBeUndefined();
+      expect(o!.weakBaseline).toBe(false);
+    });
+
+    it('weakBaseline is false for equal rates and for a best worker within the 5% margin', async () => {
+      for (const reps of [10, 10.4]) {
+        const { run } = start(
+          { kernels: [defs[0]!], size: 'standard', workers: 2 },
+          { timing: repsBy(10, (w) => (w === 0 ? reps : 5)) },
+        );
+        const [o] = await run.done;
+        expect(o!.weakBaseline, `reps ${reps}`).toBe(false);
+        expect(o!.noisy, `reps ${reps}`).toBe(false);
+      }
+    });
+
+    it('weakBaseline is true when a worker beats the baseline by more than 5%', async () => {
+      for (const reps of [10.6, 11, 20]) {
+        const { run } = start(
+          { kernels: [defs[0]!], size: 'standard', workers: 2 },
+          { timing: repsBy(10, (w) => (w === 1 ? reps : 5)) },
+        );
+        const [o] = await run.done;
+        expect(o!.weakBaseline, `reps ${reps}`).toBe(true);
+      }
+    });
+
+    it('weakBaseline forces noisy, but the row stays valid and has no error', async () => {
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'standard', workers: 2 },
+        // Zero spread everywhere, so only the weak baseline can make it noisy.
+        { timing: repsBy(10, () => 20) },
+      );
+      const [o] = await run.done;
+      expect(o!.all!.stats.spread).toBe(0);
+      expect(o!.single!.stats.spread).toBe(0);
+      expect(o!.weakBaseline).toBe(true);
+      expect(o!.noisy).toBe(true);
+      expect(o!.valid).toBe(true);
+      expect(o!.checksumOk).toBe(true);
+      expect(o!.error).toBeUndefined();
+    });
+
+    it('weakBaseline is never set at smoke size, however fast a worker is', async () => {
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'smoke', workers: 2 },
+        { timing: repsBy(10, () => 1000) },
+      );
+      const [o] = await run.done;
+      expect(o!.weakBaseline).toBe(false);
+      expect(o!.noisy).toBe(false);
+    });
+
+    it('weakBaseline is never set with one worker', async () => {
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'standard', workers: 1 },
+        { timing: repsBy(10, () => 10) },
+      );
+      const [o] = await run.done;
+      expect(o!.weakBaseline).toBe(false);
+    });
+
+    it('a failed kernel carries weakBaseline = false', async () => {
+      const { run } = start(
+        { kernels: [defs[0]!], size: 'smoke', workers: 2 },
+        { override: (m, w) => (m.type === 'prepare' && w.number === 0 ? { type: 'error', id: m.id, message: 'boom' } : undefined) },
+      );
+      const [o] = await run.done;
+      expect(o!.valid).toBe(false);
+      expect(o!.weakBaseline).toBe(false);
+    });
+
+    it('the margin is relative to the baseline throughput (5% above it is the boundary)', async () => {
+      // Baseline 10 reps/100 ms. Boundary worker rate = 10 x 1.05 = 10.5 reps. Just under is fine.
+      expect(WEAK_BASELINE_MARGIN).toBe(0.05);
+      const under = start(
+        { kernels: [defs[0]!], size: 'standard', workers: 2 },
+        { timing: repsBy(10, () => 10 * (1 + WEAK_BASELINE_MARGIN) * 0.999) },
+      );
+      expect((await under.run.done)[0]!.weakBaseline).toBe(false);
+      const over = start(
+        { kernels: [defs[0]!], size: 'standard', workers: 2 },
+        { timing: repsBy(10, () => 10 * (1 + WEAK_BASELINE_MARGIN) * 1.001) },
+      );
+      expect((await over.run.done)[0]!.weakBaseline).toBe(true);
     });
   });
 

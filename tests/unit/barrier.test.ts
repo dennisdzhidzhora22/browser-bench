@@ -29,7 +29,14 @@ type Plan = Partial<Pick<MeasureRequest, 'minSamples' | 'maxSamples' | 'targetSp
 
 interface Scenario {
   threads: number;
-  groups: Array<{ count: number; windowMs?: number; spinMs?: number; plan?: Plan }>;
+  groups: Array<{
+    count: number;
+    windowMs?: number;
+    spinMs?: number;
+    plan?: Plan;
+    silent?: number[];
+    abortAfterMs?: number;
+  }>;
   skipPrepare?: number[];
   kernel?: { id: string; seed: number; size: number };
 }
@@ -84,6 +91,7 @@ function expectWellFormed(g: Group, min: number, max: number): number {
   expect(n).toBeLessThanOrEqual(max);
   expect(g.control[CTRL.STOP]).toBe(1);
   expect(g.control[CTRL.ARRIVED]).toBe(0);
+  expect(g.control[CTRL.PASSED], 'PASSED is reset after the last sample').toBe(0);
   expect(g.control[CTRL.READY]).toBe(g.count);
   expect(g.control[CTRL.GEN], 'no error bump').toBeLessThan(ERROR_GEN);
 
@@ -95,6 +103,20 @@ function expectWellFormed(g: Group, min: number, max: number): number {
       expect(t1, `sample ${s} worker ${w} t1 >= t0`).toBeGreaterThanOrEqual(t0);
       expect(Number.isInteger(reps) && reps >= 1, `sample ${s} worker ${w} reps >= 1`).toBe(true);
       expect(t1 - t0, `sample ${s} worker ${w} ran for the whole window`).toBeGreaterThanOrEqual(g.windowMs);
+    }
+    // Busy tail: nobody stops before the last worker has passed its window, so every worker's
+    // interval overlaps every other worker's whole window (the all-cores score has no lone tail).
+    if (g.count > 1) {
+      const SKEW = 2;
+      let lastPassed = -Infinity;
+      let firstEnd = Infinity;
+      for (let w = 0; w < g.count; w++) {
+        lastPassed = Math.max(lastPassed, g.times[at(g, s, w)]! + g.windowMs);
+        firstEnd = Math.min(firstEnd, g.times[at(g, s, w) + 1]!);
+      }
+      expect(firstEnd, `sample ${s}: every worker still ran until the last one passed its window`).toBeGreaterThanOrEqual(
+        lastPassed - SKEW,
+      );
     }
     // The coordinator's score is finite and positive when time passed.
     const perRep = groupMsPerRep(Float64Array.from(g.times), s, g.count);
@@ -117,7 +139,7 @@ const single = (count: number, windowMs = 2, plan?: Plan): Scenario => ({
 
 describe('all-cores barrier on real threads (mix kernel)', () => {
   it('the runner hard-codes the same layout as the protocol', () => {
-    expect(CTRL).toEqual({ GEN: 0, ARRIVED: 1, STOP: 2, READY: 3, SAMPLES: 4, LENGTH: 8 });
+    expect(CTRL).toEqual({ GEN: 0, ARRIVED: 1, STOP: 2, READY: 3, SAMPLES: 4, PASSED: 5, LENGTH: 8 });
     expect(SLOT).toBe(3);
     expect(ERROR_GEN).toBeGreaterThan(1_000);
     expect(BARRIER_TIMEOUT_MS).toBe(30_000);
@@ -143,11 +165,44 @@ describe('all-cores barrier on real threads (mix kernel)', () => {
     }
   });
 
-  it('windowMs = 0: exactly one run() per sample', { timeout: 30_000 }, async () => {
-    const out = await run(single(2, 0, { minSamples: 3, maxSamples: 3 }));
+  it('windowMs = 0: a lone worker does exactly one run() per sample', { timeout: 30_000 }, async () => {
+    const out = await run(single(1, 0, { minSamples: 3, maxSamples: 3 }));
     const g = out.groups[0]!;
     expectWellFormed(g, 3, 3);
-    for (let s = 0; s < 3; s++) for (let w = 0; w < 2; w++) expect(g.times[at(g, s, w) + 2]).toBe(1);
+    for (let s = 0; s < 3; s++) expect(g.times[at(g, s, 0) + 2]).toBe(1);
+  });
+
+  it('windowMs = 0 with several workers: at least one run() each (the busy tail may add more)', { timeout: 30_000 }, async () => {
+    const out = await run(single(3, 0, { minSamples: 3, maxSamples: 3 }));
+    expectWellFormed(out.groups[0]!, 3, 3); // reps >= 1 is checked there
+  });
+
+  it('busy tail: with 4 workers and a 25 ms window every worker runs until the last has passed it', { timeout: 30_000 }, async () => {
+    const out = await run(single(4, 25, { minSamples: 4, maxSamples: 4 }));
+    const g = out.groups[0]!;
+    // Checked per sample in expectWellFormed; here the property is spelled out once more.
+    const SKEW = 2;
+    for (let s = 0; s < 4; s++) {
+      const lastPassed = Math.max(...[0, 1, 2, 3].map((w) => g.times[at(g, s, w)]! + 25));
+      const firstEnd = Math.min(...[0, 1, 2, 3].map((w) => g.times[at(g, s, w) + 1]!));
+      expect(firstEnd).toBeGreaterThanOrEqual(lastPassed - SKEW);
+    }
+    expectWellFormed(g, 4, 4);
+  });
+
+  it('PASSED is reset after every sample, so a second group on the same threads starts clean', { timeout: 30_000 }, async () => {
+    const plan = { minSamples: 3, maxSamples: 3, targetSpread: 0.05, maxMs: 3_000 };
+    const out = await run({
+      threads: 3,
+      groups: [
+        { count: 3, windowMs: 5, plan },
+        { count: 3, windowMs: 5, plan },
+      ],
+    });
+    for (const g of out.groups) {
+      expect(g.control[CTRL.PASSED]).toBe(0);
+      expectWellFormed(g, 3, 3);
+    }
   });
 
   // The spin runs the `mix` kernel on the same wasm instance. Measuring a different kernel after
@@ -246,6 +301,40 @@ describe('all-cores barrier on real threads (mix kernel)', () => {
       expect(g.control[CTRL.STOP]).toBe(1);
       expect(g.control[CTRL.GEN]).toBeGreaterThanOrEqual(ERROR_GEN);
       expect(g.control[CTRL.SAMPLES]).toBe(0);
+    });
+
+    it('a peer stuck in the busy tail exits when the group is aborted', { timeout: 30_000 }, async () => {
+      // Thread 3 is played by the runner: it joins the start barrier but never passes a window.
+      // Threads 0-2 pass their 20 ms window, then sit in the busy tail waiting for PASSED === 4.
+      // After 300 ms the group is failed the way a failing peer would.
+      const out = await run({
+        threads: 4,
+        groups: [{ count: 4, windowMs: 20, silent: [3], abortAfterMs: 300 }],
+      });
+      const g = out.groups[0]!;
+      expect(g.replies).toHaveLength(3);
+      // Waited for the abort, but nowhere near the barrier timeout.
+      expect(g.elapsedMs).toBeGreaterThanOrEqual(250);
+      expect(g.elapsedMs).toBeLessThan(ABORT_REPLY_MS);
+      for (const r of g.replies) {
+        expect(r).toMatchObject({ type: 'error', id: 7, message: 'another worker failed' });
+      }
+      expect(g.control[CTRL.READY]).toBe(4);
+      expect(g.control[CTRL.SAMPLES]).toBe(0);
+      expect(g.control[CTRL.PASSED]).toBe(3); // all three had passed the window and were waiting
+      expect(g.control[CTRL.GEN]).toBeGreaterThanOrEqual(ERROR_GEN);
+    });
+
+    it('without an abort that stalled peer would leave the busy tail waiting (control: PASSED stays short)', { timeout: 30_000 }, async () => {
+      // Same setup, abort after 600 ms: the peers are still waiting at 300 ms, so PASSED = 3 of 4
+      // has not released them. Guards the test above against passing for the wrong reason.
+      const out = await run({
+        threads: 4,
+        groups: [{ count: 4, windowMs: 20, silent: [3], abortAfterMs: 600 }],
+      });
+      const g = out.groups[0]!;
+      expect(g.elapsedMs).toBeGreaterThanOrEqual(550);
+      expect(g.replies.every((r) => r.message === 'another worker failed')).toBe(true);
     });
 
     it('the failing worker may be the first or the last of the group', { timeout: 30_000 }, async () => {
