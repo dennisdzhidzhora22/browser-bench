@@ -197,7 +197,10 @@ export async function sweepRunDirs(): Promise<void> {
     if (typeof navigator.storage?.getDirectory !== 'function') return;
     for (const name of await listRunDirs()) {
       if (!navigator.locks) {
-        await removeRunDir(name, 500); // no Web Locks: short budget, live runs stay locked
+        // No Web Locks (every target browser has them): short budget, and live
+        // runs are protected only by their open file. A run in another tab could
+        // in theory lose its directory between creating it and opening the file.
+        await removeRunDir(name, 500);
         continue;
       }
       await navigator.locks.request(name, { ifAvailable: true }, async (lock) => {

@@ -146,8 +146,13 @@
     // storage runs, so same-tab leftovers go and the quota estimate is right),
     // then the API and the distinct GPUs decide the GPU steps, and the quota
     // left decides the storage file size.
+    phase = { kind: 'running', index: 0, total: 0, current: 'Removing old test files' };
     await sweeping;
     if (chosen.some((c) => c.id === 'storage')) await (sweeping = sweepRunDirs());
+    if (cancelRequested) {
+      phase = { kind: 'cancelled' };
+      return;
+    }
     if (chosen.some((c) => c.id === 'gpu')) gpuPlan = await planGpus(gpuChoice);
     if (chosen.some((c) => c.id === 'storage')) storagePlan = await planStorage(size);
     const total = chosen.reduce((n, c) => n + stepsFor(c.id, c.kernels, gpuPlan), 0);
