@@ -1,13 +1,13 @@
 // Small helpers shared by the GPU render tests (draws, fragment, fragment-gl).
 
-/**
- * WebGPU flag values from the spec. TypeScript's DOM lib has the WebGPU
- * interfaces but not these globals, and we add no @webgpu/types dependency.
- */
-export const BufferUsage = { MAP_READ: 0x1, COPY_SRC: 0x4, COPY_DST: 0x8, UNIFORM: 0x40 } as const;
-export const TextureUsage = { COPY_SRC: 0x1, RENDER_ATTACHMENT: 0x10 } as const;
-export const ShaderStage = { VERTEX: 0x1, FRAGMENT: 0x2 } as const;
-export const MAP_READ = 0x1;
+// WebGPU flag values live in webgpu.ts; re-exported under the names the
+// render tests use.
+export {
+  Usage as BufferUsage,
+  TextureUsage,
+  ShaderStage,
+  MAP_MODE_READ as MAP_READ,
+} from './webgpu.ts';
 
 export function alignTo(n: number, a: number): number {
   return Math.ceil(n / a) * a;

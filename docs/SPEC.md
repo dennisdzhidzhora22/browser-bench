@@ -125,7 +125,7 @@ WebGPU first.
 
 | Test | Unit |
 |---|---|
-| Compute shader: N-body | M interactions/s |
+| Compute shader: N-body | G interactions/s |
 | Compute shader: matrix multiply | GFLOP/s |
 | Render: many draw calls, offscreen target | draws/s |
 | Render: heavy fragment shader (ray-march), offscreen target | Mpixels/s |

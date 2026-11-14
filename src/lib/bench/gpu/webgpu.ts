@@ -1,9 +1,10 @@
-// Small WebGPU helpers shared by the compute tests (n-body, matmul).
+// Small WebGPU helpers shared by the GPU tests. The flag constants below are
+// the single source for every GPU test (render-util.ts re-exports them).
 
 /**
- * GPUBufferUsage / GPUMapMode flag values from the WebGPU spec. TypeScript's
- * DOM lib has the WebGPU interfaces but not these globals, and we add no
- * @webgpu/types dependency.
+ * GPUBufferUsage / GPUTextureUsage / GPUShaderStage / GPUMapMode flag values
+ * from the WebGPU spec. TypeScript's DOM lib has the WebGPU interfaces but
+ * not these globals, and we add no @webgpu/types dependency.
  */
 export const Usage = {
   MAP_READ: 0x1,
@@ -12,7 +13,9 @@ export const Usage = {
   UNIFORM: 0x40,
   STORAGE: 0x80,
 } as const;
-const MAP_MODE_READ = 0x1;
+export const TextureUsage = { COPY_SRC: 0x1, RENDER_ATTACHMENT: 0x10 } as const;
+export const ShaderStage = { VERTEX: 0x1, FRAGMENT: 0x2 } as const;
+export const MAP_MODE_READ = 0x1;
 
 /** Deterministic PRNG (xorshift32) so inputs depend only on the seed. */
 export function rng(seed: number): () => number {

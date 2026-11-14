@@ -74,13 +74,20 @@ async function run(c: GpuContext, req: RunRequest): Promise<void> {
     const prepareMs = performance.now() - p0;
 
     // Warm-up (pipelines compile lazily on some drivers), then calibrate reps
-    // from one more single repetition so each sample lasts about targetMs.
+    // so each sample lasts about targetMs. A single rep includes the fixed
+    // submit/readback latency, so it overstates the per-rep cost; double the
+    // batch until it takes at least a quarter of the target, then scale.
     await timeBatch(k, 1);
     const target = req.targetMs ?? 0;
     let reps = 1;
     if (target > 0) {
-      const one = await timeBatch(k, 1);
-      reps = one > 0 ? Math.min(MAX_REPS, Math.max(1, Math.ceil(target / one))) : MAX_REPS;
+      let probe = 1;
+      let dt = await timeBatch(k, probe);
+      while (dt < target / 4 && probe < MAX_REPS) {
+        probe = Math.min(MAX_REPS, probe * 2);
+        dt = await timeBatch(k, probe);
+      }
+      reps = dt > 0 ? Math.min(MAX_REPS, Math.max(1, Math.round((target * probe) / dt))) : MAX_REPS;
       await timeBatch(k, reps); // warm at the real batch size too
     }
 
