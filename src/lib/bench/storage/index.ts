@@ -12,7 +12,8 @@
 // Cleanup. Every run's files live in one OPFS directory named DIR_PREFIX +
 // a unique suffix. Cancel terminates the worker, which then cannot clean up,
 // so the page removes the directory after every run (done, error or cancel)
-// and sweeps leftovers from crashed runs at page load.
+// and sweeps leftovers from crashed runs at page load and before each storage
+// run. A Web Lock per directory keeps the sweep away from live runs in other tabs.
 
 import type { KernelDef, SizeId } from '../types.ts';
 import {
@@ -174,14 +175,36 @@ export async function listRunDirs(): Promise<string[]> {
   return out;
 }
 
-/** Remove test directories left by crashed or closed runs. Call at page load. */
+/**
+ * Run `fn` while holding a Web Lock named after the run directory. The lock
+ * belongs to the page (Worker.terminate() does not release it) and the
+ * browser drops it when the page unloads, so "lock free" means "no live run
+ * uses this directory", in this tab or any other.
+ */
+export async function withRunLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  if (!navigator.locks) return fn();
+  return navigator.locks.request(dir, () => fn());
+}
+
+/**
+ * Remove test directories left by crashed, closed or reloaded runs. A
+ * directory whose lock is held belongs to a live run in another tab and is
+ * skipped. A free lock proves it is stale, so the full retry budget is safe
+ * (a just-closed page's worker can keep its file lock for seconds).
+ */
 export async function sweepRunDirs(): Promise<void> {
   try {
     if (typeof navigator.storage?.getDirectory !== 'function') return;
-    // Short budget: a stale directory has no live worker, so its lock is gone.
-    // A directory another tab's run is using right now stays locked and is skipped.
-    for (const name of await listRunDirs()) await removeRunDir(name, 500);
+    for (const name of await listRunDirs()) {
+      if (!navigator.locks) {
+        await removeRunDir(name, 500); // no Web Locks: short budget, live runs stay locked
+        continue;
+      }
+      await navigator.locks.request(name, { ifAvailable: true }, async (lock) => {
+        if (lock) await removeRunDir(name, REMOVE_BUDGET_MS);
+      });
+    }
   } catch {
-    // best effort; the next load tries again
+    // best effort; the next run or page load tries again
   }
 }

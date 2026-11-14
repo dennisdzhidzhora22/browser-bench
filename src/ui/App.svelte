@@ -17,6 +17,7 @@
     removeRunDir,
     storageDefsFor,
     sweepRunDirs,
+    withRunLock,
     type StoragePlan,
   } from '../lib/bench/storage/index.ts';
   import StorageResults from './StorageResults.svelte';
@@ -84,9 +85,11 @@
   let active: { cancel(): void } | undefined;
 
   // Test files from runs that crashed or were closed mid-run (SPEC 3.5).
-  // Before any run can start, so it never overlaps a measurement.
-  if (isolated) void sweepRunDirs();
+  // run() awaits this before measuring, so it never overlaps a measurement.
+  let sweeping: Promise<void> = isolated ? sweepRunDirs() : Promise.resolve();
   let cancelRequested = false;
+  /** True while a storage run (or its cleanup) is in progress. */
+  let inStorage = false;
 
   /** Kernels run on several workers: the all-cores CPU test, and all-cores copy. */
   const multiKernels = (id: ComponentId): readonly KernelDef[] =>
@@ -139,8 +142,12 @@
     storageCleanup = undefined;
     cancelRequested = false;
     phase = { kind: 'running', index: 0, total: 0, current: 'starting' };
-    // Before any measurement: the API and the distinct GPUs decide the GPU steps,
-    // and the quota left decides the storage file size.
+    // Before any measurement: finish the load-time sweep (and re-sweep when
+    // storage runs, so same-tab leftovers go and the quota estimate is right),
+    // then the API and the distinct GPUs decide the GPU steps, and the quota
+    // left decides the storage file size.
+    await sweeping;
+    if (chosen.some((c) => c.id === 'storage')) await (sweeping = sweepRunDirs());
     if (chosen.some((c) => c.id === 'gpu')) gpuPlan = await planGpus(gpuChoice);
     if (chosen.some((c) => c.id === 'storage')) storagePlan = await planStorage(size);
     const total = chosen.reduce((n, c) => n + stepsFor(c.id, c.kernels, gpuPlan), 0);
@@ -193,18 +200,27 @@
      */
     const runStorage = async (name: string, fileBytes: number) => {
       const dir = newRunDir();
-      try {
-        await single(name, storageDefsFor(size, fileBytes), storageOutcomes, {
-          makeWorker: createStorageWorker,
-          storage: { dir },
-        });
-      } catch (err) {
-        if (err instanceof Cancelled || cancelRequested) throw err;
-        storageError = err instanceof Error ? err.message : String(err);
-      } finally {
-        if (phase.kind === 'running') phase = { ...phase, current: `${name}: removing test files` };
-        storageCleanup = await removeRunDir(dir);
-      }
+      await withRunLock(dir, async () => {
+        inStorage = true;
+        try {
+          await single(name, storageDefsFor(size, fileBytes), storageOutcomes, {
+            makeWorker: createStorageWorker,
+            storage: { dir },
+          });
+        } catch (err) {
+          if (err instanceof Cancelled || cancelRequested) throw err;
+          storageError = err instanceof Error ? err.message : String(err);
+        } finally {
+          if (phase.kind === 'running') {
+            phase = {
+              ...phase,
+              current: cancelRequested ? 'Cancelling: removing test files' : `${name}: removing test files`,
+            };
+          }
+          storageCleanup = await removeRunDir(dir);
+          inStorage = false;
+        }
+      });
     };
     try {
       for (const c of chosen) {
@@ -247,6 +263,10 @@
   function cancel() {
     cancelRequested = true;
     active?.cancel();
+    // Removing a cancelled storage run's files can take seconds (file lock).
+    if (phase.kind === 'running' && inStorage) {
+      phase = { ...phase, current: 'Cancelling: removing test files' };
+    }
   }
 </script>
 

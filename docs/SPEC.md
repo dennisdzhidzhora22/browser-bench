@@ -183,7 +183,12 @@ after timing what it read (buffers are cleared before each sample) or reads back
 wrote. Each run's files live in one directory named `bb-storage-…`. The page deletes it after
 every run, including errors and cancel (`Worker.terminate()`), retrying for up to 15 s while
 the terminated worker's file lock clears (measured up to about 3 s), and sweeps leftover
-directories at page load.
+directories at page load and before each storage run (awaited, so never during a
+measurement). Each run holds a Web Lock named after its directory for its whole life,
+cleanup included; the sweep removes only directories whose lock is free, so it never touches
+a live run in another tab. Random 4 KiB results mostly measure the browser's per-call cost,
+not the drive. M6: storage results with different file sizes (`def.sizes`) must not be
+compared with each other or with references.
 
 ### 3.6 System info (not scored)
 
