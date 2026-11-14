@@ -5,7 +5,12 @@
 
 import { gpuFactories } from '../lib/bench/gpu/index.ts';
 import type { GpuContext, GpuKernel } from '../lib/bench/gpu/types.ts';
-import type { FromWorker, RunRequest, ToWorker } from '../lib/harness/protocol.ts';
+import type {
+  FromWorker,
+  GpuPreference,
+  RunRequest,
+  ToWorker,
+} from '../lib/harness/protocol.ts';
 import { fastestSpread } from '../lib/harness/stats.ts';
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -20,9 +25,9 @@ function reply(msg: FromWorker, transfer: Transferable[] = []): void {
   self.postMessage(msg, transfer);
 }
 
-async function init(): Promise<Record<string, string>> {
-  const info: Record<string, string> = {};
-  const adapter = await self.navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
+async function init(pref: GpuPreference): Promise<Record<string, string>> {
+  const info: Record<string, string> = { preference: pref };
+  const adapter = await self.navigator.gpu?.requestAdapter({ powerPreference: pref });
   if (adapter) {
     const device = await adapter.requestDevice();
     device.lost.then((l) => {
@@ -39,7 +44,7 @@ async function init(): Promise<Record<string, string>> {
   const gl = new OffscreenCanvas(1, 1).getContext('webgl2', {
     antialias: false,
     depth: false,
-    powerPreference: 'high-performance',
+    powerPreference: pref,
   });
   if (!gl) throw new Error('neither WebGPU nor WebGL2 is available');
   ctx = { gl };
@@ -115,7 +120,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
   const req = event.data;
   if (req.type === 'init') {
     try {
-      const info = ctx ? {} : await init();
+      const info = ctx ? {} : await init(req.gpuPreference ?? 'high-performance');
       reply({ type: 'ready', abi: 0, info });
     } catch (err) {
       reply({ type: 'error', message: errorText(err) });

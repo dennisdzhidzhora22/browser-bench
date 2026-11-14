@@ -137,6 +137,25 @@ by the display refresh rate. Time a batch with `queue.onSubmittedWorkDone()`. Re
 WebGL2 fallback runs only the fragment test and is labelled **fallback** in results. Fallback
 results are never mixed into the same reference comparison as WebGPU results.
 
+**Choosing the GPU (owner request, 2026-11-14).** Browsers do not list GPUs; they only take a
+power preference. The user picks **Fast** (`high-performance`), **Power-saving**
+(`low-power`) or **Both**. On dual-GPU PCs this usually means the dedicated and the built-in
+GPU, but the browser and the OS (e.g. Windows per-app graphics settings) decide. Before the
+run, the page asks for an adapter with each chosen preference and compares what the browser
+reports; if both give the same GPU it is tested once and the page says so. Each tested GPU
+gets its own results table, labelled with what the browser reports.
+
+Limit (verified on the owner's PC: Arc 140T + RTX 5070 Ti, both preferences gave the 140T):
+Chrome on Windows ignores the preference for WebGPU and uses one GPU for all its work, and
+cannot use two GPUs at once. When "Both" finds one GPU, the page explains how to switch:
+`chrome://flags/#force-high-performance-gpu`, or Windows per-app graphics settings, or one
+browser per GPU. The choice is kept because other platforms (e.g. macOS) honor it.
+
+How it works (M4): GPU tests run in `gpu.worker.ts`. Each test repeats its work to fill about
+200 ms per sample (calibrated once). GPU float results differ between GPUs and drivers, so
+instead of exact checksums each test reads back part of its output after timing and checks it
+against a CPU reference within a stated tolerance.
+
 ### 3.5 Storage
 
 OPFS with `createSyncAccessHandle` inside a worker.

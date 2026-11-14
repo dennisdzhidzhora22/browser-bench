@@ -18,7 +18,12 @@ export interface InitRequest {
    * to a fast core and raises its clock before the first measurement.
    */
   spinMs: number;
+  /** GPU worker only: which GPU to ask the browser for. Default 'high-performance'. */
+  gpuPreference?: GpuPreference;
 }
+
+/** WebGPU / WebGL2 power preference. On dual-GPU PCs this usually picks dGPU vs iGPU. */
+export type GpuPreference = 'high-performance' | 'low-power';
 
 export interface RunRequest {
   type: 'run';

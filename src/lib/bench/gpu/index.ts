@@ -1,4 +1,5 @@
 // GPU tests registry (docs/SPEC.md, 3.4).
+import type { GpuPreference } from '../../harness/protocol.ts';
 import type { KernelDef } from '../types.ts';
 import { createGpuDraws, gpuDraws } from './draws.ts';
 import { createGpuFragment, gpuFragment } from './fragment.ts';
@@ -31,21 +32,75 @@ export function isFallback(def: KernelDef): boolean {
 
 export type GpuApi = 'webgpu' | 'webgl2' | 'none';
 
+/** Which GPU(s) the user asked to test. Browsers expose only these two hints, not a GPU list. */
+export type GpuChoice = 'high-performance' | 'low-power' | 'both';
+
+export interface GpuTarget {
+  preference: GpuPreference;
+  /** What the browser reports for the GPU this preference gets. */
+  label: string;
+}
+
+export interface GpuPlan {
+  api: GpuApi;
+  /** One entry per distinct GPU to test, in run order. Empty when api is 'none'. */
+  targets: GpuTarget[];
+  /** True when 'both' was asked for but the two preferences gave the same GPU. */
+  sameGpu: boolean;
+}
+
+function webgpuLabel(a: GPUAdapter): string {
+  const i = a.info;
+  return [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join(' · ') || 'GPU';
+}
+
+function webglLabel(pref: GpuPreference): string | undefined {
+  const gl = new OffscreenCanvas(1, 1).getContext('webgl2', { powerPreference: pref });
+  if (!gl) return undefined;
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const label = String(gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+  return label;
+}
+
 /**
- * Which GPU API this browser offers. Runs on the page before a run starts
- * (never during a measurement).
+ * Which API to use and which distinct GPUs `choice` maps to. Runs on the page
+ * before a run starts (never during a measurement). With 'both', the two
+ * preferences are compared by what the browser reports and deduplicated.
  */
-export async function detectGpuApi(): Promise<GpuApi> {
+export async function planGpus(choice: GpuChoice): Promise<GpuPlan> {
+  const prefs: GpuPreference[] =
+    choice === 'both' ? ['high-performance', 'low-power'] : [choice];
+  const dedupe = (all: GpuTarget[]): GpuPlan['targets'] =>
+    all.filter((t, i) => all.findIndex((u) => u.label === t.label) === i);
+
   try {
-    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
-    if (adapter) return 'webgpu';
+    if (navigator.gpu) {
+      const found: GpuTarget[] = [];
+      for (const preference of prefs) {
+        const a = await navigator.gpu.requestAdapter({ powerPreference: preference });
+        if (a) found.push({ preference, label: webgpuLabel(a) });
+      }
+      if (found.length > 0) {
+        const targets = dedupe(found);
+        return { api: 'webgpu', targets, sameGpu: prefs.length > 1 && targets.length === 1 };
+      }
+    }
   } catch {
     // fall through to WebGL2
   }
   try {
-    if (new OffscreenCanvas(1, 1).getContext('webgl2')) return 'webgl2';
+    const found: GpuTarget[] = [];
+    for (const preference of prefs) {
+      const label = webglLabel(preference);
+      if (label !== undefined) found.push({ preference, label });
+    }
+    if (found.length > 0) {
+      const targets = dedupe(found);
+      return { api: 'webgl2', targets, sameGpu: prefs.length > 1 && targets.length === 1 };
+    }
   } catch {
     // none
   }
-  return 'none';
+  return { api: 'none', targets: [], sameGpu: false };
 }

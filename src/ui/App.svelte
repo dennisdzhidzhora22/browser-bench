@@ -10,11 +10,15 @@
     type RunMode,
   } from '../lib/harness/orchestrator.ts';
   import {
-    detectGpuApi,
     fallbackKernels,
+    planGpus,
     webgpuKernels,
     type GpuApi,
+    type GpuChoice,
+    type GpuPlan,
+    type GpuTarget,
   } from '../lib/bench/gpu/index.ts';
+  import type { GpuPreference } from '../lib/harness/protocol.ts';
   import GpuResults from './GpuResults.svelte';
   import {
     clampWorkers,
@@ -57,18 +61,25 @@
   let multiOutcomes: MultiOutcome[] = $state([]);
   let memOutcomes: KernelOutcome[] = $state([]);
   let memMulti: MultiOutcome[] = $state([]);
-  let gpuOutcomes: KernelOutcome[] = $state([]);
-  let gpuInfo: Record<string, string> = $state({});
-  let gpuApi: GpuApi | undefined = $state();
+  let gpuChoice: GpuChoice = $state('high-performance');
+  /** One entry per GPU tested, in run order. */
+  let gpuRuns: { target: GpuTarget; info: Record<string, string>; outcomes: KernelOutcome[] }[] =
+    $state([]);
+  let gpuPlan: GpuPlan | undefined = $state();
   let active: { cancel(): void } | undefined;
   let cancelRequested = false;
 
   /** Kernels run on several workers: the all-cores CPU test, and all-cores copy. */
   const multiKernels = (id: ComponentId): readonly KernelDef[] =>
     id === 'memory' ? [memCopyMulti] : [];
-  /** Kernels a component will actually run (GPU depends on the API this browser offers). */
-  const kernelsFor = (id: ComponentId, all: readonly KernelDef[], api: GpuApi | undefined) =>
-    id !== 'gpu' ? all : api === 'webgpu' ? webgpuKernels : api === 'webgl2' ? fallbackKernels : [];
+  /** GPU tests for the API this browser offers. */
+  const gpuKernelsFor = (api: GpuApi | undefined) =>
+    api === 'webgpu' ? webgpuKernels : api === 'webgl2' ? fallbackKernels : [];
+  /** Steps a component adds to the progress count. */
+  const stepsFor = (id: ComponentId, all: readonly KernelDef[], p: GpuPlan | undefined) =>
+    id === 'gpu'
+      ? gpuKernelsFor(p?.api).length * (p?.targets.length ?? 0)
+      : all.length + multiKernels(id).length;
   const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
   const anySelected = $derived(toRun.length > 0);
   const needsWorkers = $derived(selected['cpu-multi'] || selected.memory);
@@ -99,14 +110,13 @@
     multiOutcomes = [];
     memOutcomes = [];
     memMulti = [];
-    gpuOutcomes = [];
-    gpuInfo = {};
+    gpuRuns = [];
+    gpuPlan = undefined;
     cancelRequested = false;
     phase = { kind: 'running', index: 0, total: 0, current: 'starting' };
-    // Before any measurement: which GPU API to use decides the GPU test list.
-    if (chosen.some((c) => c.id === 'gpu')) gpuApi = await detectGpuApi();
-    const plan = chosen.map((c) => ({ ...c, kernels: kernelsFor(c.id, c.kernels, gpuApi) }));
-    const total = plan.reduce((n, c) => n + c.kernels.length + multiKernels(c.id).length, 0);
+    // Before any measurement: the API and the distinct GPUs decide the GPU steps.
+    if (chosen.some((c) => c.id === 'gpu')) gpuPlan = await planGpus(gpuChoice);
+    const total = chosen.reduce((n, c) => n + stepsFor(c.id, c.kernels, gpuPlan), 0);
     phase = { kind: 'running', index: 0, total, current: 'starting' };
     let offset = 0;
     const hook = (name: string) => {
@@ -120,7 +130,7 @@
       name: string,
       kernels: readonly KernelDef[],
       out: KernelOutcome[],
-      gpu = false,
+      gpu?: { preference: GpuPreference; onReady: (info: Record<string, string>) => void },
     ) => {
       if (kernels.length === 0) return;
       const r = startRun({
@@ -129,7 +139,9 @@
         mode,
         beforeKernel: hook(name),
         afterKernel: (_i, o) => void out.push(o),
-        ...(gpu ? { makeWorker: createGpuWorker, onReady: (info) => (gpuInfo = info) } : {}),
+        ...(gpu
+          ? { makeWorker: createGpuWorker, gpuPreference: gpu.preference, onReady: gpu.onReady }
+          : {}),
       });
       active = r;
       await r.done;
@@ -150,15 +162,24 @@
       offset += kernels.length;
     };
     try {
-      for (const c of plan) {
+      for (const c of chosen) {
         if (cancelRequested) throw new Cancelled();
         if (c.id === 'cpu-multi') await multi(c.name, c.kernels, multiOutcomes);
         else if (c.id === 'memory') {
           await single(c.name, c.kernels, memOutcomes);
           if (cancelRequested) throw new Cancelled();
           await multi(c.name, multiKernels('memory'), memMulti);
-        } else if (c.id === 'gpu') await single(c.name, c.kernels, gpuOutcomes, true);
-        else await single(c.name, c.kernels, outcomes);
+        } else if (c.id === 'gpu') {
+          for (const target of gpuPlan?.targets ?? []) {
+            if (cancelRequested) throw new Cancelled();
+            gpuRuns.push({ target, info: {}, outcomes: [] });
+            const entry = gpuRuns[gpuRuns.length - 1]!;
+            await single(`GPU (${target.label})`, gpuKernelsFor(gpuPlan?.api), entry.outcomes, {
+              preference: target.preference,
+              onReady: (info) => (entry.info = info),
+            });
+          }
+        } else await single(c.name, c.kernels, outcomes);
       }
       phase = { kind: 'done' };
     } catch (err) {
@@ -226,6 +247,27 @@
         <span class="muted">(this browser reports {cores} logical cores)</span>
       </label>
     {/if}
+    {#if selected.gpu}
+      <div class="workers" data-testid="gpu-choice">
+        GPU to test:
+        <label class="inline">
+          <input type="radio" bind:group={gpuChoice} value="high-performance" data-testid="gpu-fast" />
+          Fast
+        </label>
+        <label class="inline">
+          <input type="radio" bind:group={gpuChoice} value="low-power" data-testid="gpu-low" />
+          Power-saving
+        </label>
+        <label class="inline">
+          <input type="radio" bind:group={gpuChoice} value="both" data-testid="gpu-both" />
+          Both
+        </label>
+        <span class="muted">
+          (browsers pick the GPU for each; on PCs with two GPUs this is usually the dedicated one
+          and the built-in one)
+        </span>
+      </div>
+    {/if}
   </fieldset>
 
   <fieldset disabled={phase.kind === 'running'}>
@@ -268,9 +310,39 @@
     <MemoryResults outcomes={memOutcomes} multi={memMulti} smoke={size === 'smoke'} />
   {/if}
 
-  {#if gpuOutcomes.length > 0 || (gpuApi === 'none' && selected.gpu && phase.kind !== 'idle')}
+  {#if gpuPlan}
     <h2>GPU</h2>
-    <GpuResults outcomes={gpuOutcomes} info={gpuInfo} api={gpuApi} />
+    {#if gpuPlan.api === 'none'}
+      <GpuResults outcomes={[]} info={{}} api="none" />
+    {/if}
+    {#if gpuPlan.sameGpu}
+      <div class="muted" data-testid="gpu-same">
+        <p>
+          Both choices gave the same GPU, so it was tested once. If this PC has a second GPU,
+          the browser chose not to use it: web pages can only ask, and Chrome on Windows uses one
+          GPU for everything. To test the other GPU:
+        </p>
+        <ul>
+          <li>
+            Turn on <code>chrome://flags/#force-high-performance-gpu</code> and restart Chrome, or
+          </li>
+          <li>
+            Windows Settings → System → Display → Graphics → your browser → "High performance"
+            (or "Power saving"), then restart it.
+          </li>
+          <li>
+            To compare both, set one browser (e.g. Chrome) to one GPU and another (e.g. Edge) to
+            the other. <code>chrome://gpu</code> shows which GPU a browser is using.
+          </li>
+        </ul>
+      </div>
+    {/if}
+    {#each gpuRuns as g (g.target.preference)}
+      <h3 data-testid="gpu-run-{g.target.preference}">
+        {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
+      </h3>
+      <GpuResults outcomes={g.outcomes} info={g.info} api={gpuPlan.api} />
+    {/each}
   {/if}
 
   <p class="muted note">
@@ -301,8 +373,16 @@
   .workers {
     margin-top: 0.5rem;
   }
-  .workers input {
+  .workers input[type='number'] {
     width: 4rem;
+  }
+  .inline {
+    display: inline;
+    margin-right: 0.75rem;
+  }
+  h3 {
+    font-size: 1rem;
+    margin: 1rem 0 0.4rem;
   }
   h2 {
     font-size: 1.1rem;

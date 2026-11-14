@@ -13,7 +13,7 @@
   const fallback = $derived(outcomes.some((o) => isFallback(o.def)));
   const described = $derived(
     Object.entries(info)
-      .filter(([k]) => k !== 'api')
+      .filter(([k]) => k !== 'api' && k !== 'preference')
       .map(([, v]) => v)
       .join(' · '),
   );

@@ -6,7 +6,13 @@
 
 import type { KernelDef, SizeId } from '../bench/types.ts';
 import { loadKernelModule } from './module.ts';
-import type { FromWorker, InitRequest, RunRequest, RunResult } from './protocol.ts';
+import type {
+  FromWorker,
+  GpuPreference,
+  InitRequest,
+  RunRequest,
+  RunResult,
+} from './protocol.ts';
 import { fastest, summarize, type SampleStats } from './stats.ts';
 
 export type RunMode = 'quick' | 'full';
@@ -61,6 +67,8 @@ export interface RunOptions {
   afterKernel?: (index: number, outcome: KernelOutcome) => void;
   /** Called once the worker is ready, with whatever it reports about itself (GPU: adapter). */
   onReady?: (info: Record<string, string>) => void;
+  /** GPU runs: which GPU the worker should ask for. */
+  gpuPreference?: GpuPreference;
   /** Injection points for tests. */
   makeWorker?: () => Worker;
   loadModule?: () => Promise<WebAssembly.Module>;
@@ -146,7 +154,12 @@ export function startRun(opts: RunOptions): Run {
     try {
       const module = await (opts.loadModule ?? loadKernelModule)();
       if (cancelled) throw new Cancelled();
-      const ready = await send({ type: 'init', module, spinMs: opts.spinMs ?? SPIN_MS });
+      const ready = await send({
+        type: 'init',
+        module,
+        spinMs: opts.spinMs ?? SPIN_MS,
+        ...(opts.gpuPreference ? { gpuPreference: opts.gpuPreference } : {}),
+      });
       if (ready.type === 'error') throw new Error(`worker init failed: ${ready.message}`);
       if (ready.type === 'ready') opts.onReady?.(ready.info ?? {});
 
