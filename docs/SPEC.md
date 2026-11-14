@@ -146,8 +146,8 @@ screen size, measured refresh rate, `crossOriginIsolated`. Collected once before
 
 | Mode | Length | Output |
 |---|---|---|
-| Benchmark — Quick | about 1 min for all components | scores |
-| Benchmark — Full | about 5 min for all components | scores, tighter spread |
+| Benchmark — Quick | a few minutes at most (1 min was a soft goal; owner OK'd ~70 s for CPU alone, 2026-11-13) | scores |
+| Benchmark — Full | longer than Quick, soft limit | scores, tighter spread |
 | Endurance | 10, 30 or 60 min, user picks | throughput over time, start vs end, drop % |
 | Stress | until stopped | same chart, live |
 
