@@ -180,6 +180,8 @@ function run(m: KernelModule, req: RunRequest): void {
   const status = k.prepare(req.seed, req.size);
   const prepareMs = performance.now() - p0;
   prepareStatus(status);
+  // `mix` keeps no arena buffers, so spinning on it leaves the prepared kernel intact.
+  spin(m, req.spinMs ?? 0);
 
   // Warm-up: lets the engine tier up the code. Not recorded.
   const checksum = run() >>> 0;

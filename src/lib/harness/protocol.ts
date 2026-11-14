@@ -38,6 +38,8 @@ export interface RunRequest {
   targetSpread: number;
   /** Stop adding samples past `minSamples` once this much time has passed. */
   maxMs: number;
+  /** Busy-spin after prepare, before warm-up. Optional; default 0. */
+  spinMs?: number;
 }
 
 // ── All-cores test (docs/SPEC.md, 3.2) ─────────────────────────────────────

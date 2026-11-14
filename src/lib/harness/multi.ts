@@ -38,6 +38,8 @@ export const BASELINE_WINDOW_MS = 300;
  * (contention can only slow a core down), so the row is flagged.
  */
 export const WEAK_BASELINE_MARGIN = 0.05;
+/** Wait before the one retry of a failed pool start. */
+export const POOL_RETRY_DELAY_MS = 1_000;
 /** Highest worker count accepted, as a multiple of the reported logical cores. */
 export const MAX_WORKERS_PER_CORE = 2;
 
@@ -182,21 +184,35 @@ export function startMultiRun(opts: MultiOptions): Run<MultiOutcome> {
     if (cancelled) throw (cancelError ??= new Cancelled());
   };
 
-  async function getPool(module: WebAssembly.Module, count: number): Promise<Channel[]> {
-    if (pool) return pool;
+  async function startPool(module: WebAssembly.Module, count: number): Promise<Channel[]> {
     const p = Array.from({ length: count }, () => new Channel(makeWorker()));
     pool = p;
-    try {
-      await sendAll(p, 'ready', () => ({
-        type: 'init',
-        module,
-        spinMs: opts.spinMs ?? SPIN_MS,
-      }));
-    } catch (err) {
-      checkCancel();
-      throw new InitFailed(`worker init failed: ${err instanceof Error ? err.message : err}`);
-    }
+    await sendAll(p, 'ready', () => ({
+      type: 'init',
+      module,
+      spinMs: opts.spinMs ?? SPIN_MS,
+    }));
     return p;
+  }
+
+  async function getPool(module: WebAssembly.Module, count: number): Promise<Channel[]> {
+    if (pool) return pool;
+    try {
+      return await startPool(module, count);
+    } catch (first) {
+      checkCancel();
+      // Starting many workers right after a memory-heavy test can fail while
+      // the browser is still releasing the old worker's memory. Retry once.
+      killPool(first instanceof Error ? first : new Error(String(first)));
+      await new Promise((r) => setTimeout(r, POOL_RETRY_DELAY_MS));
+      checkCancel();
+      try {
+        return await startPool(module, count);
+      } catch (err) {
+        checkCancel();
+        throw new InitFailed(`worker init failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
   }
 
   async function measure(

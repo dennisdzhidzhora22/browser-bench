@@ -28,6 +28,8 @@ export interface KernelDef {
   work(size: number): number;
   /** True for the simd128 variant of a kernel. */
   simd?: boolean;
+  /** Busy-spin this long after prepare, before warm-up (single-core runs). */
+  spinBeforeMs?: number;
   /**
    * Size for the all-cores test, when `standard` uses too much memory to run
    * one instance per core (target: under ~16 MB of wasm memory per instance).

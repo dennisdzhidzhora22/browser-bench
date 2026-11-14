@@ -112,10 +112,12 @@ one call stays short next to the timed window; with few workers its total can fi
 and the UI says so. Copy bandwidth counts bytes copied once (memory traffic is about 2×), and
 the UI says so. Latency follows a random single-cycle chain at cache-line stride; each hop is
 one dependent load of a stored address, with no index arithmetic. The hop count grows with the
-working set so every line is touched and each run lasts about 0.25 s or more (SPEC 5.3).
+working set so every line is touched and each run lasts about 50 ms or more (SPEC 5.3).
 17 working-set sizes from 16 KB to 256 MB, including 12 and 24 MB to locate the L3 → RAM
 step. Peak wasm memory is about 272 MB (the 256 MB chain plus its shuffle table). The memory
-component takes about 70 s in Quick mode (run times are soft limits).
+component's run time is a soft limit. Automated runs (Playwright) launch Chrome with
+background throttling turned off; a headless or background window otherwise gets lower clocks
+and slow cores from Windows.
 
 ### 3.4 GPU
 
@@ -184,7 +186,10 @@ All modes:
 2. Warm-up run. Not recorded.
 3. Timed samples. Each sample calls the kernel once and reads `performance.now()` before and
    after, **inside the worker**. Sizes are chosen so one sample runs at least 250 ms, which
-   makes timer resolution irrelevant.
+   makes timer resolution irrelevant. Exception (M3 review): latency runs target about 50 ms
+   or more at the fastest plausible latency (2,500+ ticks even at a 20 µs timer). Long
+   samples on hybrid CPUs almost always contain a core move or clock change, so many shorter
+   samples give cleaner fastest samples. Each latency size spins 150 ms first.
 4. Adaptive sampling (changed in M1 after review; was a fixed 3 / 7 samples). Quick takes at
    least 3 samples and at most 9, Full at least 7 and at most 21. After the minimum, the worker
    stops once the fastest *minimum-count* samples agree within 5% (Quick) or 3% (Full), or

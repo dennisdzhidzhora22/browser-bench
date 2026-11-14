@@ -10,6 +10,15 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4173',
     channel: 'chrome',
+    launchOptions: {
+      // Keep Chrome from treating the test window as background work
+      // (lower clocks, slow cores), which adds noise to measurements.
+      args: [
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+      ],
+    },
   },
   webServer: {
     command: 'npm run preview',

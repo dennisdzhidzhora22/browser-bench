@@ -46,11 +46,13 @@
 //!   Each hop is one dependent load with no other arithmetic, so hops cannot
 //!   overlap and the time per hop is the latency of a random access at this
 //!   working-set size.
-//!   hops(size) (enough that one run takes ~0.25 s or more on a fast PC, and
-//!   at least one hop per line so large sizes touch every line):
-//!     size <= 32 KiB: 2^28 + 7     size <= 256 KiB: 2^27 + 7
-//!     size <= 2 MiB:  2^26 + 7     size <= 8 MiB:   2^24 + 7
-//!     size <= 24 MiB: 2^23 + 7     larger: max(n, 2^21) + 7
+//!   hops(size): each tier is sized so one run takes about 50 ms or more at
+//!   the FASTEST plausible latency for that size (e.g. a big-L3 desktop), and
+//!   is at least one hop per line so large sizes touch every line:
+//!     size < 16 KiB (tests only): n * 16 + 7
+//!     size <= 32 KiB: 2^26 + 7     size <= 256 KiB: 2^25 + 7
+//!     size <= 2 MiB:  2^24 + 7     size <= 8 MiB:   2^23 + 7
+//!     size <= 64 MiB: 2^22 + 7     larger: max(n, 2^21) + 7
 //!   (+7: n is often a power of two, and a multiple of n would always end on
 //!   line 0, making the checksum useless.)
 //!   Work: hops(size) dependent loads.
@@ -62,7 +64,7 @@ use core::hint::black_box;
 
 pub const FILL_PASSES: u32 = 20;
 pub const COPY_PASSES: u32 = 48;
-pub const COPY_MT_PASSES: u32 = 4;
+pub const COPY_MT_PASSES: u32 = 2;
 
 const KIB: u32 = 1024;
 const MIB: u32 = 1024 * 1024;
@@ -70,16 +72,18 @@ const MIB: u32 = 1024 * 1024;
 /// Dependent loads per `mem_latency_run` at a working-set size (see header).
 pub fn latency_hops(size: u32) -> u32 {
     let n = size / 64;
-    let base = if size <= 32 * KIB {
-        1 << 28
-    } else if size <= 256 * KIB {
-        1 << 27
-    } else if size <= 2 * MIB {
+    let base = if size < 16 * KIB {
+        n * 16
+    } else if size <= 32 * KIB {
         1 << 26
-    } else if size <= 8 * MIB {
+    } else if size <= 256 * KIB {
+        1 << 25
+    } else if size <= 2 * MIB {
         1 << 24
-    } else if size <= 24 * MIB {
+    } else if size <= 8 * MIB {
         1 << 23
+    } else if size <= 64 * MIB {
+        1 << 22
     } else {
         n.max(1 << 21)
     };
@@ -108,6 +112,8 @@ fn clear() -> &'static mut State {
     s.a = &mut [];
     s.b = &mut [];
     s.chain = &mut [];
+    // No hops without a chain: a stray run after another prepare does nothing.
+    s.hops = 0;
     arena::reset();
     s
 }
@@ -239,6 +245,9 @@ pub extern "C" fn mem_latency_prepare(seed: u32, size: u32) -> u32 {
 pub extern "C" fn mem_latency_run() -> u32 {
     // SAFETY: as above.
     let s = unsafe { STATE.get() };
+    if s.chain.is_empty() {
+        return 0;
+    }
     let base = s.chain.as_ptr() as usize;
     let mut p = base;
     for _ in 0..s.hops {

@@ -4,7 +4,7 @@ import type { KernelDef } from '../types.ts';
 /** Passes per `run` (FILL_PASSES, COPY_PASSES, COPY_MT_PASSES in mem.rs). */
 export const FILL_PASSES = 20;
 export const COPY_PASSES = 48;
-export const COPY_MT_PASSES = 4;
+export const COPY_MT_PASSES = 2;
 
 const KB = 1 << 10;
 const MB = 1 << 20;
@@ -13,17 +13,19 @@ const MB = 1 << 20;
 export function latencyHops(size: number): number {
   const n = Math.floor(size / 64);
   const base =
-    size <= 32 * KB
-      ? 2 ** 28
-      : size <= 256 * KB
-        ? 2 ** 27
-        : size <= 2 * MB
-          ? 2 ** 26
-          : size <= 8 * MB
+    size < 16 * KB
+      ? n * 16
+      : size <= 32 * KB
+        ? 2 ** 26
+        : size <= 256 * KB
+          ? 2 ** 25
+          : size <= 2 * MB
             ? 2 ** 24
-            : size <= 24 * MB
+            : size <= 8 * MB
               ? 2 ** 23
-              : Math.max(n, 2 ** 21);
+              : size <= 64 * MB
+                ? 2 ** 22
+                : Math.max(n, 2 ** 21);
   return base + 7;
 }
 
@@ -64,8 +66,8 @@ export const memCopyMulti: KernelDef = {
   unit: 'GB/s',
   seed: 1,
   sizes: { smoke: 4_096, standard: 16 * MB },
-  expected: { smoke: 3_617_977_387, standard: 2_411_805_647 },
-  multi: { size: 16 * MB, expected: 2_411_805_647 },
+  expected: { smoke: 3_150_876_299, standard: 1_498_308_565 },
+  multi: { size: 16 * MB, expected: 1_498_308_565 },
   work: (size) => (size * COPY_MT_PASSES) / 1e9,
 };
 
@@ -81,9 +83,9 @@ const LATENCY_POINTS: readonly [size: number, expected: number][] = [
   [2 * MB, 13_766],
   [4 * MB, 46_407],
   [8 * MB, 23_311],
-  [12 * MB, 45_137],
+  [12 * MB, 80_162],
   [16 * MB, 45_804],
-  [24 * MB, 284_919],
+  [24 * MB, 263_856],
   [32 * MB, 194_244],
   [64 * MB, 165_723],
   [128 * MB, 1_724_444],
@@ -109,6 +111,8 @@ export const latencyDefs: readonly KernelDef[] = LATENCY_POINTS.map(([size, expe
   sizes: { smoke: 4_096, standard: size },
   expected: { smoke: 34, standard: expected },
   work: (s) => latencyHops(s),
+  // Runs are short (~50 ms+); a spin first puts the thread on a fast core at full clock.
+  spinBeforeMs: 150,
 }));
 
 /** Single-core memory tests, in run order. All-cores copy (memCopyMulti) runs after them. */

@@ -156,6 +156,7 @@ export function startRun(opts: RunOptions): Run {
           seed: def.seed,
           size,
           ...plan,
+          ...(def.spinBeforeMs ? { spinMs: def.spinBeforeMs } : {}),
         });
         const hidden =
           hiddenAtStart || visibility.hiddenNow() || visibility.losses() !== lossesBefore;
