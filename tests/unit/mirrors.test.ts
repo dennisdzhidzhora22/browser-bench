@@ -593,3 +593,161 @@ describe('lz mirror', () => {
     expect(wasmChecksum('lz', 0, 9000)).toBe(lzMirror(0, 9000));
   });
 });
+
+// ───────────────────────────── trace ─────────────────────────────
+
+type Vec = [number, number, number];
+const vadd = (a: Vec, b: Vec): Vec => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const vsub = (a: Vec, b: Vec): Vec => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const vmul = (a: Vec, b: Vec): Vec => [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
+const vscale = (a: Vec, s: number): Vec => [a[0] * s, a[1] * s, a[2] * s];
+const vdot = (a: Vec, b: Vec): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const vnorm = (v: Vec): Vec => {
+  const l = Math.sqrt(vdot(v, v));
+  return [v[0] / l, v[1] / l, v[2] / l];
+};
+
+interface TraceSphere {
+  c: Vec;
+  r: number;
+  albedo: Vec;
+  mirror: boolean;
+}
+// trace.rs header "Scene", in the documented order.
+const TRACE_SPHERES: TraceSphere[] = [
+  { c: [0, 1, 3], r: 1.0, albedo: [0.8, 0.3, 0.3], mirror: false },
+  { c: [-2.2, 0.8, 4], r: 0.8, albedo: [0.3, 0.8, 0.3], mirror: false },
+  { c: [2.1, 1, 3.5], r: 1.0, albedo: [0.9, 0.9, 0.9], mirror: true },
+  { c: [0.6, 0.35, 1.6], r: 0.35, albedo: [0.3, 0.4, 0.9], mirror: false },
+];
+const TRACE_PLANE_ALBEDO: Vec = [0.6, 0.6, 0.6];
+const TRACE_SPP = 4;
+const TRACE_DEPTH = 4;
+const TRACE_EPS = 1e-4;
+
+function traceSky(d: Vec): Vec {
+  const t = 0.5 * (d[1] + 1.0);
+  return [(1.0 - t) + t * 0.5, (1.0 - t) + t * 0.7, (1.0 - t) + t * 1.0];
+}
+
+function traceRadiance(o0: Vec, d0: Vec, rng: Rng): Vec {
+  let o = o0;
+  let d = d0;
+  let thr: Vec = [1, 1, 1];
+  for (let bounce = 0; bounce < TRACE_DEPTH; bounce++) {
+    let best = 1e30;
+    let hit = -1; // 0..3 sphere, 4 plane, -1 none
+    for (let i = 0; i < TRACE_SPHERES.length; i++) {
+      const s = TRACE_SPHERES[i]!;
+      const oc = vsub(o, s.c);
+      const b = vdot(oc, d);
+      const c = vdot(oc, oc) - s.r * s.r;
+      const disc = b * b - c;
+      if (disc > 0) {
+        const q = Math.sqrt(disc);
+        let t = -b - q;
+        if (t < TRACE_EPS) t = -b + q;
+        if (t > TRACE_EPS && t < best) {
+          best = t;
+          hit = i;
+        }
+      }
+    }
+    if (d[1] < -1e-9) {
+      const t = -o[1] / d[1];
+      if (t > TRACE_EPS && t < best) {
+        best = t;
+        hit = 4;
+      }
+    }
+    if (hit === -1) return vmul(thr, traceSky(d));
+    const p = vadd(o, vscale(d, best));
+    let n: Vec;
+    let albedo: Vec;
+    let mirror = false;
+    if (hit === 4) {
+      n = [0, 1, 0];
+      albedo = TRACE_PLANE_ALBEDO;
+    } else {
+      const s = TRACE_SPHERES[hit]!;
+      n = [(p[0] - s.c[0]) / s.r, (p[1] - s.c[1]) / s.r, (p[2] - s.c[2]) / s.r];
+      albedo = s.albedo;
+      mirror = s.mirror;
+    }
+    thr = vmul(thr, albedo);
+    if (mirror) {
+      d = vsub(d, vscale(n, 2.0 * vdot(d, n)));
+    } else {
+      let x: number;
+      let y: number;
+      let z: number;
+      for (;;) {
+        x = 2.0 * rng.nextF64() - 1.0;
+        y = 2.0 * rng.nextF64() - 1.0;
+        z = 2.0 * rng.nextF64() - 1.0;
+        const l2 = x * x + y * y + z * z;
+        if (l2 < 1.0 && l2 > 1e-6) break;
+      }
+      d = vnorm(vadd(n, [x, y, z]));
+    }
+    o = p;
+  }
+  return [0, 0, 0];
+}
+
+/** trace.rs header: run() over W x H pixels, SPP samples, quantised per channel. */
+function traceMirror(seed: number, w: number): number {
+  const h = Math.floor((w * 3) / 4);
+  let acc = START;
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const idx = (py * w + px) >>> 0;
+      let hs = (seed ^ Math.imul(idx, 0x9e3779b1)) >>> 0;
+      hs = (hs ^ (hs >>> 16)) >>> 0;
+      hs = Math.imul(hs, 0x85ebca6b) >>> 0;
+      hs = (hs ^ (hs >>> 13)) >>> 0;
+      const rng = new Rng(hs);
+      let col: Vec = [0, 0, 0];
+      for (let s = 0; s < TRACE_SPP; s++) {
+        const u = rng.nextF64();
+        const v = rng.nextF64();
+        const sx = ((px + u) / w) * 2.0 - 1.0;
+        const sy = 1.0 - ((py + v) / h) * 2.0;
+        col = vadd(col, traceRadiance([0, 1, -2], vnorm([sx, sy * 0.75, 1.5]), rng));
+      }
+      for (const c of col) {
+        const m = c * 0.25;
+        const q = m >= 1.0 ? 255 : Math.trunc(Math.sqrt(m) * 255.0) >>> 0;
+        acc = fold(acc, q);
+      }
+    }
+  }
+  return acc;
+}
+
+describe('trace mirror', () => {
+  const d = def('trace');
+  it('the def agrees with the header: smoke width 16, SPP 4 in the work formula', () => {
+    expect(d.sizes.smoke).toBe(16);
+    expect(d.work(16)).toBe((16 * 12 * 4) / 1e3);
+  });
+  it('reproduces expected.smoke', () => {
+    expect(traceMirror(d.seed, d.sizes.smoke)).toBe(d.expected.smoke);
+  });
+  it('matches the smoke size with seed 1', () => {
+    expect(wasmChecksum('trace', 1, 16)).toBe(traceMirror(1, 16));
+  });
+  // Multiples of 4: the minimum (4 x 3), small odd heights (20 x 15), non-power-of-two and a larger one.
+  it.each([4, 8, 20, 36, 64])('matches at width %i', (size) => {
+    expect(wasmChecksum('trace', d.seed, size)).toBe(traceMirror(d.seed, size));
+  });
+  it('matches for other seeds, including 0 (replaced by the Rng zero fallback)', () => {
+    for (const seed of [0, 2, 0xdeadbeef]) {
+      expect(wasmChecksum('trace', seed, 24)).toBe(traceMirror(seed, 24));
+    }
+  });
+  it('rejects sizes that are zero or not a multiple of 4 (status 2)', () => {
+    const k = mod.kernel('trace');
+    for (const size of [0, 1, 2, 3, 5, 18]) expect(k.prepare(1, size), `size ${size}`).toBe(2);
+  });
+});
