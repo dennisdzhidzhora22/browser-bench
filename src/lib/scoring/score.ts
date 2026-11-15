@@ -103,10 +103,15 @@ export function scoreComponent(
   return { points: Math.round(1000 * geomean(subs)), partial, ...(note ? { note } : {}) };
 }
 
-/** The component record that counts toward the total for `id`. For GPU, only the Fast (high-performance) GPU. */
+/**
+ * The component record that counts toward the total for `id`. GPU: when
+ * several GPUs were tested ("Both"), only the Fast (high-performance) one;
+ * a single tested GPU always counts (whichever the user picked).
+ */
 export function counted(components: readonly ComponentRecord[], id: ComponentId): ComponentRecord | undefined {
   const all = components.filter((c) => c.id === id);
-  return id === 'gpu' ? all.find((c) => !c.gpu || c.gpu.preference === 'high-performance') : all[0];
+  if (id !== 'gpu' || all.length <= 1) return all[0];
+  return all.find((c) => !c.gpu || c.gpu.preference === 'high-performance');
 }
 
 /** Geomean of the counted component points. Partial unless all five ran complete. */

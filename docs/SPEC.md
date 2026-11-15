@@ -144,9 +144,10 @@ GPU, but the browser and the OS (e.g. Windows per-app graphics settings) decide.
 run, the page asks for an adapter with each chosen preference and compares what the browser
 reports; if both give the same GPU it is tested once and the page says so. Each tested GPU
 gets its own results table, labelled with what the browser reports. Scoring (M6): each
-tested GPU gets its own GPU points; only the **Fast** (`high-performance`) GPU counts in the
-total. A Power-saving GPU never counts (owner decision, 2026-11-15): a run that tested only
-it has a partial total. "Same GPU" is reported only when both preferences found an adapter.
+tested GPU gets its own GPU points. When several GPUs were tested ("Both"), only the **Fast**
+(`high-performance`) one counts in the total; a single tested GPU always counts, whichever
+preference the user picked. "Same GPU" is reported only when both preferences found an
+adapter.
 
 Limit (verified on the owner's PC: Arc 140T + RTX 5070 Ti, both preferences gave the 140T):
 Chrome on Windows ignores the preference for WebGPU and uses one GPU for all its work, and
