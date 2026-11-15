@@ -1,0 +1,235 @@
+<!doctype html>
+<!-- Static style mockup for M8 "polish" (not part of the app build). Open in Chrome.
+     Plain CSS only: system font, no images, no web fonts, no libraries. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>browser-bench mockup</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #fff; --line: #e3e6ea; --text: #16181d; --muted: #6b7280;
+    --accent: #2563eb; --accent-soft: #dbe6fd; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) { --bg: #0f1115; --card: #171a21; --line: #262a33; --text: #e6e8ec;
+      --muted: #9aa1ad; --accent: #6b9cff; --accent-soft: #1d2a45; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; }
+  }
+  :root.dark { --bg: #0f1115; --card: #171a21; --line: #262a33; --text: #e6e8ec;
+    --muted: #9aa1ad; --accent: #6b9cff; --accent-soft: #1d2a45; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 24px 20px 48px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  .brand { font-weight: 650; font-size: 18px; letter-spacing: -0.01em; }
+  .brand span { color: var(--accent); }
+  .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+  .muted { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .grid { display: grid; gap: 14px; }
+
+  /* Setup */
+  .setup { grid-template-columns: 1.4fr 1fr; align-items: start; }
+  @media (max-width: 760px) { .setup { grid-template-columns: 1fr; } }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 0 0 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line);
+    border-radius: 8px; cursor: pointer; user-select: none; }
+  .chip input { accent-color: var(--accent); margin: 0; }
+  .chip:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: none; color: inherit; padding: 7px 14px; font: inherit; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+  .run { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 22px;
+    font: inherit; font-weight: 600; cursor: pointer; }
+  .run:hover { filter: brightness(1.08); }
+
+  /* Progress */
+  .progress { margin-top: 14px; }
+  .bar { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; width: 62%; background: var(--accent); border-radius: 99px; }
+
+  /* Score */
+  .hero { display: flex; align-items: center; gap: 28px; margin-top: 14px; flex-wrap: wrap; }
+  .total { font-size: 56px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
+  .scores { grid-template-columns: repeat(5, 1fr); margin-top: 14px; }
+  @media (max-width: 900px) { .scores { grid-template-columns: repeat(2, 1fr); } }
+  .score .v { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; }
+  .score .ref { font-size: 13px; }
+  .meter { height: 4px; background: var(--line); border-radius: 99px; margin-top: 10px; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+  .tag { font-size: 11px; padding: 2px 7px; border-radius: 5px; border: 1px solid currentColor; }
+  .tag.warn { color: var(--warn); } .tag.ok { color: var(--ok); } .tag.bad { color: var(--bad); }
+
+  /* Results table */
+  details { margin-top: 14px; }
+  summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+  summary::-webkit-details-marker { display: none; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; font-weight: 600; color: var(--muted); }
+  td.r, th.r { text-align: right; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  tr:last-child td { border-bottom: 0; }
+  .unit { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+
+  .toggle { background: none; border: 1px solid var(--line); color: inherit; border-radius: 8px; padding: 5px 10px;
+    font: inherit; font-size: 13px; cursor: pointer; }
+  .note { font-size: 12px; margin-top: 10px; }
+
+  /* ---------- Style B: Terminal (mono, sharp, green on near-black) ---------- */
+  [data-style='terminal'] {
+    --bg: #0b0d0c; --card: #0f1311; --line: #1f2a24; --text: #d6e5dc; --muted: #7d9286;
+    --accent: #3ddc84; --accent-soft: #12271b; --ok: #3ddc84; --warn: #e5c07b; --bad: #ff6b6b; --radius: 2px;
+  }
+  [data-style='terminal'] body { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 14px; }
+  [data-style='terminal'] .total { font-weight: 500; }
+  [data-style='terminal'] .run, [data-style='terminal'] .seg button.on { color: #0b0d0c; }
+  [data-style='terminal'] h2::before { content: '> '; color: var(--accent); }
+  [data-style='terminal'] .card { box-shadow: inset 0 0 0 1px transparent; }
+  [data-style='terminal'] .chip, [data-style='terminal'] .seg, [data-style='terminal'] .run,
+  [data-style='terminal'] .toggle, [data-style='terminal'] .pill { border-radius: 2px; }
+  [data-style='terminal'] .meter i, [data-style='terminal'] .bar i { border-radius: 0; }
+
+  /* ---------- Style C: Vivid (a color per component, soft tinted cards) ---------- */
+  [data-style='vivid'] { --bg: #f4f2fb; --line: #e6e1f5; --accent: #6d28d9; --accent-soft: #ede7fb; --radius: 16px; }
+  [data-style='vivid'] .card { border: 0; box-shadow: 0 1px 2px rgba(30, 20, 60, .06), 0 4px 16px rgba(30, 20, 60, .05); }
+  [data-style='vivid'] .score:nth-child(1) { --c: #2563eb; } [data-style='vivid'] .score:nth-child(2) { --c: #7c3aed; }
+  [data-style='vivid'] .score:nth-child(3) { --c: #0891b2; } [data-style='vivid'] .score:nth-child(4) { --c: #db2777; }
+  [data-style='vivid'] .score:nth-child(5) { --c: #ea580c; }
+  [data-style='vivid'] .score { background: color-mix(in srgb, var(--c) 9%, var(--card)); }
+  [data-style='vivid'] .score h2, [data-style='vivid'] .score .v { color: var(--c); }
+  [data-style='vivid'] .score .meter i { background: var(--c); }
+  [data-style='vivid'] .total { background: linear-gradient(90deg, #6d28d9, #db2777); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  [data-style='vivid'] .run { border-radius: 999px; background: linear-gradient(90deg, #6d28d9, #db2777); }
+  [data-style='vivid'] .chip { border-radius: 999px; }
+  [data-style='vivid'] .seg { border-radius: 999px; }
+
+  /* ---------- Style D: Minimal (no boxes, lines and big type, lots of air) ---------- */
+  [data-style='minimal'] { --bg: #fff; --card: transparent; --line: #ececec; --accent: #111; --accent-soft: #f2f2f2; --radius: 0; }
+  [data-style='minimal'] .card { border: 0; border-top: 1px solid var(--line); padding: 22px 0; }
+  [data-style='minimal'] .grid { gap: 32px; }
+  [data-style='minimal'] .total { font-size: 88px; font-weight: 300; letter-spacing: -0.05em; }
+  [data-style='minimal'] .score .v { font-size: 34px; font-weight: 300; }
+  [data-style='minimal'] .meter { height: 1px; } [data-style='minimal'] .bar { height: 2px; }
+  [data-style='minimal'] .chip { border: 0; padding: 6px 0; margin-right: 10px; }
+  [data-style='minimal'] .chip:has(input:checked) { background: none; text-decoration: underline; text-underline-offset: 5px; }
+  [data-style='minimal'] .seg { border: 0; gap: 18px; }
+  [data-style='minimal'] .seg button { padding: 4px 0; border: 0 !important; }
+  [data-style='minimal'] .seg button.on { background: none; color: var(--text); border-bottom: 2px solid var(--text) !important; }
+  [data-style='minimal'] .run { border-radius: 0; background: #111; padding: 12px 30px; }
+  [data-style='minimal'] .pill { background: none; color: var(--muted); padding: 0; }
+  [data-style='minimal'] th { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">browser<span>·</span>bench</div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <span class="pill">Chrome 157 · 16 cores · Arc 140T</span>
+      <select class="toggle" onchange="document.documentElement.dataset.style = this.value">
+        <option value="">A · Clean</option><option value="terminal">B · Terminal</option>
+        <option value="vivid">C · Vivid</option><option value="minimal">D · Minimal</option>
+      </select>
+      <button class="toggle" onclick="flip()">Light / dark</button>
+    </div>
+  </header>
+
+  <div class="grid setup">
+    <section class="card">
+      <h2>What to test</h2>
+      <div class="chips">
+        <label class="chip"><input type="checkbox" checked /> CPU · 1 core</label>
+        <label class="chip"><input type="checkbox" checked /> CPU · all cores</label>
+        <label class="chip"><input type="checkbox" checked /> Memory</label>
+        <label class="chip"><input type="checkbox" checked /> GPU</label>
+        <label class="chip"><input type="checkbox" /> Storage</label>
+      </div>
+      <div class="row">
+        <div class="seg">
+          <button class="on">Quick</button><button>Full</button><button>Endurance</button><button>Stress</button>
+        </div>
+        <button class="run">Run</button>
+      </div>
+      <div class="progress">
+        <div class="row" style="margin:0"><span>CPU · all cores: Matrix multiply</span><span class="muted num">7 / 11</span></div>
+        <div class="bar"><i></i></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Total</h2>
+      <div class="hero">
+        <div>
+          <div class="total num">1,064</div>
+          <div class="muted">4 of 5 components <span class="tag warn">partial</span></div>
+        </div>
+        <div class="muted" style="font-size:13px">
+          Your PC (ref.) <b class="num" style="color:var(--text)">1,000</b><br />
+          Quick · 14 Nov 2026, 14:20
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid scores">
+    <div class="card score"><h2>CPU · 1 core</h2><div class="v num">1,085</div>
+      <div class="ref muted">ref. 1,000</div><div class="meter"><i style="width:72%"></i></div></div>
+    <div class="card score"><h2>CPU · all</h2><div class="v num">1,032</div>
+      <div class="ref muted">ref. 1,000 · 14.6× scaling</div><div class="meter"><i style="width:69%"></i></div></div>
+    <div class="card score"><h2>Memory</h2><div class="v num">1,041</div>
+      <div class="ref muted">ref. 1,000</div><div class="meter"><i style="width:70%"></i></div></div>
+    <div class="card score"><h2>GPU</h2><div class="v num">1,098</div>
+      <div class="ref muted">ref. 1,000 · WebGPU</div><div class="meter"><i style="width:74%"></i></div></div>
+    <div class="card score" style="opacity:.55"><h2>Storage</h2><div class="v">—</div>
+      <div class="ref muted">not run</div><div class="meter"><i style="width:0"></i></div></div>
+  </div>
+
+  <section class="card" style="margin-top:14px">
+    <details open>
+      <summary><span>CPU · 1 core</span><span class="muted num">1,085 pts</span></summary>
+      <table>
+        <thead><tr><th>Test</th><th class="r">Result</th><th class="r">Your PC (ref.)</th><th class="r">Spread</th><th>Check</th></tr></thead>
+        <tbody>
+          <tr><td>SHA-256</td><td class="r num">318<span class="unit">MB/s</span></td><td class="r num muted">300</td><td class="r num">1.2 %</td><td><span class="dot"></span>ok</td></tr>
+          <tr><td>LZ compress</td><td class="r num">142<span class="unit">MB/s</span></td><td class="r num muted">138</td><td class="r num">2.0 %</td><td><span class="dot"></span>ok</td></tr>
+          <tr><td>Sort</td><td class="r num">96.4<span class="unit">M keys/s</span></td><td class="r num muted">90.1</td><td class="r num">0.8 %</td><td><span class="dot"></span>ok</td></tr>
+          <tr><td>Matrix multiply · SIMD</td><td class="r num">17.1<span class="unit">GFLOP/s</span></td><td class="r num muted">16.3</td><td class="r num">11.4 %</td><td><span class="dot warn"></span>noisy</td></tr>
+          <tr><td>Path tracer</td><td class="r num">5.82<span class="unit">Mrays/s</span></td><td class="r num muted">5.40</td><td class="r num">1.9 %</td><td><span class="dot"></span>ok</td></tr>
+        </tbody>
+      </table>
+    </details>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <details>
+      <summary><span>Memory</span><span class="muted num">1,041 pts</span></summary>
+    </details>
+  </section>
+
+  <p class="note muted">Mockup only. Numbers are examples. Plain CSS: no images, no web fonts, no libraries.</p>
+</div>
+<script>
+  // Mockup only: lets you flip light/dark without changing the OS setting.
+  function flip() {
+    const r = document.documentElement;
+    const dark = r.classList.contains('dark') ||
+      (!r.classList.contains('light') && matchMedia('(prefers-color-scheme: dark)').matches);
+    r.classList.toggle('dark', !dark);
+    r.classList.toggle('light', dark);
+  }
+</script>
+</body>
+</html>

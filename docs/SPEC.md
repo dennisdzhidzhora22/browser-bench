@@ -447,7 +447,18 @@ parallel Builder owns only its own `src/lib/bench/<component>/` and kernel files
 | M5 | Storage tests | files always cleaned up, including on cancel |
 | M6 | Scoring, reference column, history, export/import | round trip preserves results; `scoreVersion` enforced |
 | M7 | Endurance and Stress modes, chart, tab-hidden handling, Wake Lock | 10-min Endurance completes with drop % reported |
-| M8 | Polish, size budget, capture owner's PC as first reference | budget met; `references.json` has one real entry |
+| M8 | Polish, size budget, capture owner's PC as first reference | budget met; `references.json` has one real entry; four skins switchable |
+
+**M8 polish (owner decision, 2026-11-15).** One shared layout based on mockup D
+(`docs/mockup-d.html`): top bar (Benchmark / History / About), system strip, numbered sections
+(setup, score, per-component tables with a "vs. ref" bar, memory latency chart vs. reference,
+recent runs). Four switchable skins over that layout (`docs/mockup-m8.html`): **A Clean**
+(cards), **B Terminal** (monospace, green on black, sharp), **C Vivid** (a colour per component,
+tinted cards), **D Minimal** (lines, big light numbers). Each skin has light and dark, following
+the OS unless the user picks one. The choice is saved in localStorage and applied before first
+paint (no flash). Skins are CSS only (custom properties + small overrides): system fonts, no
+images, no web fonts, no libraries, no animation during a run; switching is disabled during a
+run. Budget: about 7 kB gzip for layout and skins, keeping page load under 50 kB with M7's chart.
 
 ## 13. Risks
 
