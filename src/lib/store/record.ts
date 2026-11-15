@@ -43,8 +43,15 @@ function stats(s: SampleStats | undefined) {
     : {};
 }
 
-function flags(o: { valid: boolean; noisy: boolean; hidden: boolean; error?: string }) {
-  return { valid: o.valid, noisy: o.noisy, hidden: o.hidden, ...(o.error ? { error: o.error } : {}) };
+function flags(o: { valid: boolean; noisy: boolean; hidden: boolean; checksumOk: boolean; error?: string }) {
+  return {
+    valid: o.valid,
+    noisy: o.noisy,
+    hidden: o.hidden,
+    // Stored only when it fails: hidden + failed check must not read as ok.
+    ...(o.checksumOk ? {} : { checksumOk: false }),
+    ...(o.error ? { error: o.error } : {}),
+  };
 }
 
 export function kernelRecord(o: KernelOutcome): KernelRecord {

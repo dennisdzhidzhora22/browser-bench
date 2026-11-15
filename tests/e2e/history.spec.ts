@@ -318,28 +318,41 @@ test.describe('M6 export and import', () => {
       partial: false,
       components: run.components.map((c) => ({ ...c, points: 999999, partial: false })),
     };
+    // The same run without any forged numbers: what a recompute must come out as.
+    const clean = { ...run, id: 'clean', size: 'standard' };
     await clearAll(page);
-    await importText(page, fileOf([forged]));
-    await expect(page.getByTestId('history-item')).toHaveCount(1);
-    await expect(page.getByTestId('history-total')).not.toContainText('999999');
-    const rec = (await stored(page)).runs[0]!;
-    expect(rec.total).not.toBe(999999);
+    await importText(page, fileOf([forged, clean]));
+    await expect(page.getByTestId('history-item')).toHaveCount(2);
+    const total = (id: string) => page.locator(`[data-testid="history-item"][data-id="${id}"]`).getByTestId('history-total');
+    await expect(total('forged')).not.toContainText('999999');
+    await expect(total('forged')).toHaveText(await total('clean').innerText());
+    const byId = async (id: string) => (await stored(page)).runs.find((r) => r.id === id)!;
+    const rec = await byId('forged');
+    const ref = await byId('clean');
+    expect(typeof ref.total).toBe('number'); // not vacuous: a real recomputed total
+    expect(rec.total).toBe(ref.total);
+    expect(rec.partial).toBe(ref.partial);
+    expect(rec.components.map((c) => [c.points, c.partial])).toEqual(ref.components.map((c) => [c.points, c.partial]));
     expect(rec.components.every((c) => c.points !== 999999)).toBe(true);
 
     // Also on load: tamper with the saved history directly.
     await page.evaluate(
       ([k]) => {
         const f = JSON.parse(localStorage.getItem(k!)!);
-        f.runs[0].total = 999999;
-        for (const c of f.runs[0].components) c.points = 999999;
+        const r = f.runs.find((x: { id: string }) => x.id === 'forged');
+        r.total = 999999;
+        for (const c of r.components) c.points = 999999;
         localStorage.setItem(k!, JSON.stringify(f));
       },
       [KEY],
     );
     await page.reload();
-    await expect(page.getByTestId('history-total')).not.toContainText('999999');
-    await page.getByTestId('history-open').click();
+    await expect(page.getByTestId('history-item')).toHaveCount(2);
+    await expect(total('forged')).not.toContainText('999999');
+    await expect(total('forged')).toHaveText(await total('clean').innerText());
+    await page.locator('[data-testid="history-item"][data-id="forged"]').getByTestId('history-open').click();
     await expect(page.getByTestId('points')).not.toContainText('999999');
+    await expect(page.getByTestId('total')).toHaveText(String(ref.total) + (ref.partial ? ' partial' : ''));
   });
 
   test('unknown keys in an imported file are not kept', async ({ page }) => {
@@ -406,7 +419,7 @@ test.describe('M6 history cap and the import confirmation', () => {
     await expect(page.getByTestId('history-confirm')).toContainText('would remove 1 of your saved run');
     await page.getByTestId('history-confirm-yes').click();
     await expect(page.getByTestId('history-confirm')).toHaveCount(0);
-    await expect(page.getByTestId('history-message')).toHaveText('Imported 1 run; 1 oldest dropped (limit 50).');
+    await expect(page.getByTestId('history-message')).toHaveText('Imported 1 run; 1 oldest saved run dropped (limit 50).');
     await expect(page.getByTestId('history-item')).toHaveCount(50);
     expect(await ids(page)).toEqual(['newcomer', ...seeded.slice(0, 49)]);
     await page.reload();
@@ -435,7 +448,50 @@ test.describe('M6 history cap and the import confirmation', () => {
     const seeded = await seed(page, run, 50);
     await importText(page, fileOf([{ ...run, id: 'ancient', time: '2000-01-01T00:00:00.000Z' }]));
     await expect(page.getByTestId('history-confirm')).toHaveCount(0);
-    await expect(page.getByTestId('history-message')).toContainText('1 oldest dropped (limit 50)');
+    await expect(page.getByTestId('history-message')).toHaveText('Imported 0 runs; 1 too old to keep (limit 50).');
     expect(await ids(page)).toEqual(seeded);
+    expect((await stored(page)).runs).toHaveLength(50);
+  });
+
+  test('the import message tells added, already-there, saved runs dropped and new runs too old apart', async ({ page }) => {
+    const run = await baseRun(page);
+    const seeded = await seed(page, run, 50);
+    const newer = ['new-a', 'new-b'].map((id, i) => ({ ...run, id, time: new Date(Date.UTC(2030, 0, 1, i)).toISOString() }));
+    const ancient = { ...run, id: 'ancient', time: '2000-01-01T00:00:00.000Z' };
+    const there = { ...run, id: 'seed-5', time: new Date(Date.UTC(2026, 0, 1, 5)).toISOString() };
+    await importText(page, fileOf([...newer, ancient, there]));
+    // Only the saved runs that would really go are counted in the question.
+    await expect(page.getByTestId('history-confirm')).toContainText('would remove 2 of your saved runs');
+    await page.getByTestId('history-confirm-yes').click();
+    await expect(page.getByTestId('history-message')).toHaveText(
+      'Imported 2 runs (1 already in history); 2 oldest saved runs dropped (limit 50); 1 too old to keep (limit 50).',
+    );
+    expect(await ids(page)).toEqual(['new-b', 'new-a', ...seeded.slice(0, 48)]);
+    expect((await stored(page)).runs).toHaveLength(50);
+  });
+
+  test('starting a run while the question is open withdraws it: nothing is imported, the import control is back', async ({ page }) => {
+    const run = await baseRun(page);
+    const seeded = await seed(page, run, 50);
+    await importText(page, fileOf([{ ...run, id: 'newcomer', time: '2030-01-01T00:00:00.000Z' }]));
+    await expect(page.getByTestId('history-confirm')).toBeVisible();
+    await page.getByTestId('run').click();
+    // The question goes away at once: the history is about to change under it.
+    await expect(page.getByTestId('history-confirm')).toHaveCount(0);
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
+    await expect(page.getByTestId('history-confirm')).toHaveCount(0);
+    const now = await ids(page);
+    expect(now).not.toContain('newcomer');
+    expect(now).toHaveLength(50);
+    expect(now.slice(1)).toEqual(seeded.slice(0, 49)); // the run itself was saved, pushing the oldest out
+    await expect(page.getByTestId('history-import')).toBeEnabled();
+  });
+
+  test('the import control is disabled while a run is in progress', async ({ page }) => {
+    await startSmoke(page);
+    await page.getByTestId('run').click();
+    await expect(page.getByTestId('history-import')).toBeDisabled();
+    await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
+    await expect(page.getByTestId('history-import')).toBeEnabled();
   });
 });

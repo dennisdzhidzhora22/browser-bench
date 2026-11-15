@@ -50,16 +50,21 @@ export function sortRuns(runs: readonly RunRecord[]): RunRecord[] {
   return [...runs].sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
 }
 
-/** Adds runs not already present (by id), newest first, capped. */
+/**
+ * Adds runs not already present (by id), newest first, capped. `added` counts
+ * new runs that were kept, `tooOld` new runs the cap cut at once, `dropped`
+ * saved runs the cap pushed out.
+ */
 export function mergeRuns(
   existing: readonly RunRecord[],
   incoming: readonly RunRecord[],
-): { runs: RunRecord[]; added: number; dropped: number } {
+): { runs: RunRecord[]; added: number; tooOld: number; dropped: number } {
   const have = new Set(existing.map((r) => r.id));
   const fresh = incoming.filter((r) => !have.has(r.id));
-  const all = sortRuns([...existing, ...fresh]);
-  const runs = all.slice(0, HISTORY_CAP);
-  return { runs, added: fresh.length, dropped: all.length - runs.length };
+  const runs = sortRuns([...existing, ...fresh]).slice(0, HISTORY_CAP);
+  const kept = new Set(runs.map((r) => r.id));
+  const added = fresh.filter((r) => kept.has(r.id)).length;
+  return { runs, added, tooOld: fresh.length - added, dropped: lostRuns(existing, runs) };
 }
 
 /** How many of `existing` are not in `merged` (pushed out by the cap). */

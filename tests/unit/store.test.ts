@@ -18,7 +18,7 @@ import {
   sortRuns,
 } from '../../src/lib/store/history.ts';
 import { parseExport } from '../../src/lib/store/import.ts';
-import { buildRecord, kernelRecord } from '../../src/lib/store/record.ts';
+import { buildRecord, kernelRecord, multiRecord } from '../../src/lib/store/record.ts';
 import { checkRecord, SCHEMA, type RunRecord } from '../../src/lib/store/schema.ts';
 import {
   at,
@@ -132,7 +132,27 @@ describe('buildRecord', () => {
 
   it('a kernel that failed outright (no stats, no throughput) is recorded with null and no stats', () => {
     const k = kernelRecord({ def: cpuKernels[0]!, checksumOk: false, hidden: false, noisy: false, valid: false, error: 'boom' });
-    expect(k).toEqual({ key: 'sha256', unit: cpuKernels[0]!.unit, value: null, valid: false, noisy: false, hidden: false, error: 'boom' });
+    expect(k).toEqual({ key: 'sha256', unit: cpuKernels[0]!.unit, value: null, valid: false, noisy: false, hidden: false, checksumOk: false, error: 'boom' });
+  });
+
+  it('a failed output check is stored as checksumOk:false, a passed one leaves the key out (compact, older records lack it)', () => {
+    const bad = kernelRecord(outcome(cpuKernels[0]!, 123, { valid: false, checksumOk: false, error: 'output check failed: x' }));
+    expect(bad.checksumOk).toBe(false);
+    const good = kernelRecord(outcome(cpuKernels[0]!, 123));
+    expect('checksumOk' in good).toBe(false);
+    // hidden but with a passing check: no checksumOk key either
+    const hidden = kernelRecord(outcome(cpuKernels[0]!, 123, { valid: false, hidden: true }));
+    expect('checksumOk' in hidden).toBe(false);
+    // the all-cores record carries it as well
+    const m = multiRecord(multiOutcome(cpuKernels[0]!, 123, { valid: false, checksumOk: false, error: 'output check failed: x' }));
+    expect(m.checksumOk).toBe(false);
+    expect('checksumOk' in multiRecord(multiOutcome(cpuKernels[0]!, 123))).toBe(false);
+  });
+
+  it('hidden and a failed check together: both flags are recorded, so the failure is not lost behind "hidden"', () => {
+    const k = kernelRecord(outcome(cpuKernels[0]!, 123, { valid: false, hidden: true, checksumOk: false, error: 'output check failed: x' }));
+    expect(k).toMatchObject({ valid: false, hidden: true, checksumOk: false, error: 'output check failed: x' });
+    expect(checkRecord({ ...tinyRecord('a', at(0)), components: [{ ...tinyRecord('a', at(0)).components[0]!, kernels: [k] }] })).toBeUndefined();
   });
 
   it('a partial selection: the total is the geomean of what ran, marked partial', () => {
@@ -751,7 +771,7 @@ describe('mergeRuns and sortRuns', () => {
   it('importing only runs already there changes nothing', () => {
     const existing = [tinyRecord('a', at(1)), tinyRecord('b', at(2))];
     const m = mergeRuns(existing, existing);
-    expect(m).toEqual({ runs: sortRuns(existing), added: 0, dropped: 0 });
+    expect(m).toEqual({ runs: sortRuns(existing), added: 0, tooOld: 0, dropped: 0 });
   });
 
   it('merging into an empty history', () => {
@@ -767,6 +787,7 @@ describe('mergeRuns and sortRuns', () => {
     const m = mergeRuns(existing, incoming);
     expect(m.runs).toHaveLength(50);
     expect(m.added).toBe(5);
+    expect(m.tooOld).toBe(0);
     expect(m.dropped).toBe(3);
     expect(m.runs.map((r) => r.id)).toEqual([...incoming.map((r) => r.id).reverse(), ...existing.map((r) => r.id).reverse().slice(0, 45)]);
     expect(m.runs.some((r) => r.id === 'e0')).toBe(false); // the oldest is gone
@@ -776,7 +797,43 @@ describe('mergeRuns and sortRuns', () => {
     const existing = Array.from({ length: 50 }, (_, i) => tinyRecord(`e${i}`, at(100 + i)));
     const m = mergeRuns(existing, [tinyRecord('ancient', at(0))]);
     expect(m.runs.map((r) => r.id)).toEqual(sortRuns(existing).map((r) => r.id));
-    expect(m.dropped).toBe(1);
+    expect(m.added).toBe(0);
+    expect(m.tooOld).toBe(1); // the new run was cut, not a saved one
+    expect(m.dropped).toBe(0);
+  });
+
+  it('counts: added (kept), tooOld (new runs cut at once) and dropped (saved runs pushed out) are separate', () => {
+    // 48 saved (times 100..147); 5 new: 3 newer than all (kept), 2 older than all (cut at once).
+    const existing = Array.from({ length: 48 }, (_, i) => tinyRecord(`e${i}`, at(100 + i)));
+    const newer = Array.from({ length: 3 }, (_, i) => tinyRecord(`n${i}`, at(200 + i)));
+    const older = Array.from({ length: 2 }, (_, i) => tinyRecord(`o${i}`, at(i)));
+    const m = mergeRuns(existing, [...newer, ...older]);
+    expect(m.runs).toHaveLength(HISTORY_CAP);
+    expect(m.added).toBe(3);
+    expect(m.tooOld).toBe(2);
+    expect(m.dropped).toBe(1); // 48 + 3 = 51: the oldest saved run, e0, goes
+    expect(m.runs.some((r) => r.id === 'e0')).toBe(false);
+    expect(m.runs.some((r) => r.id.startsWith('o'))).toBe(false);
+    // Every incoming run is accounted for exactly once.
+    expect(m.added + m.tooOld).toBe(5);
+  });
+
+  it('runs already saved count in none of added, tooOld or dropped', () => {
+    const existing = Array.from({ length: HISTORY_CAP }, (_, i) => tinyRecord(`e${i}`, at(100 + i)));
+    const m = mergeRuns(existing, [existing[0]!, existing[49]!, tinyRecord('ancient', at(0))]);
+    expect(m).toMatchObject({ added: 0, tooOld: 1, dropped: 0 });
+    expect(m.runs.map((r) => r.id)).toEqual(sortRuns(existing).map((r) => r.id));
+  });
+
+  it('a newer-than-all import into a full history only pushes saved runs out', () => {
+    const existing = Array.from({ length: HISTORY_CAP }, (_, i) => tinyRecord(`e${i}`, at(100 + i)));
+    const m = mergeRuns(existing, [tinyRecord('x', at(500)), tinyRecord('y', at(501))]);
+    expect(m).toMatchObject({ added: 2, tooOld: 0, dropped: 2 });
+  });
+
+  it('into an empty history, 51 new runs: 50 kept, the oldest is tooOld, nothing saved is dropped', () => {
+    const incoming = Array.from({ length: HISTORY_CAP + 1 }, (_, i) => tinyRecord(`i${i}`, at(i)));
+    expect(mergeRuns([], incoming)).toMatchObject({ added: HISTORY_CAP, tooOld: 1, dropped: 0 });
   });
 
   it('a new run saved after the last measurement goes first and pushes the oldest out at 50', () => {

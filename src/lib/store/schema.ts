@@ -24,6 +24,8 @@ export interface KernelRecord {
   valid: boolean;
   noisy: boolean;
   hidden: boolean;
+  /** False when the output check failed (absent = passed; older records lack it). */
+  checksumOk?: boolean;
   error?: string;
   /** All-cores tests: worker count, 1-worker value, scaling ratio and flags. */
   workers?: number;
@@ -104,6 +106,8 @@ const numOrNull = is((x) => x === null || finite(x));
 const bool = is((x) => typeof x === 'boolean');
 /** Integer >= 1 (core and worker counts). */
 const count = is((x) => Number.isInteger(x) && (x as number) >= 1);
+/** Integer >= 0 (sample counts). */
+const whole = is((x) => Number.isInteger(x) && (x as number) >= 0);
 const oneOf = (...xs: unknown[]) => is((x) => xs.includes(x));
 const opt =
   (p: Parse): Parse =>
@@ -147,23 +151,31 @@ const KERNEL = shape(
     value: numOrNull,
     ms: opt(shape({ median: num, min: num, max: num })),
     spread: opt(num),
-    samples: opt(num),
+    samples: opt(whole),
     valid: bool,
     noisy: bool,
     hidden: bool,
+    checksumOk: opt(bool),
     error: opt(str),
     workers: opt(count),
     single: opt(numOrNull),
     singleSpread: opt(num),
-    singleSamples: opt(num),
+    singleSamples: opt(whole),
     scaling: opt(numOrNull),
     weakBaseline: opt(bool),
   },
-  // A result measured while the tab was hidden is never valid.
-  (k) => !(k['valid'] && k['hidden']),
+  // A result measured while the tab was hidden, or with a failed check, is never valid.
+  (k) => !(k['valid'] && (k['hidden'] || k['checksumOk'] === false)),
 );
 
-const COMPONENT = shape({
+/** True when `key(x)` is distinct for every item (keyed lists in the UI need it). */
+const unique = (xs: unknown, key: (x: Record<string, unknown>) => unknown) => {
+  const list = xs as Record<string, unknown>[];
+  return new Set(list.map(key)).size === list.length;
+};
+
+const COMPONENT = shape(
+  {
   id: oneOf('cpu-single', 'cpu-multi', 'memory', 'gpu', 'storage'),
   kernels: listOf(KERNEL),
   points: numOrNull,
@@ -181,12 +193,15 @@ const COMPONENT = shape({
   sameGpu: opt(bool),
   fileBytes: opt(num),
   scaled: opt(bool),
-});
+  },
+  (c) => unique(c['kernels'], (k) => k['key']),
+);
 
 /** ISO 8601 UTC, as `Date.toISOString()` writes it: these sort as strings. */
 const ISO_UTC = /^\d{4}-\d\d-\d\dT[\d:.]+Z$/;
 
-const RECORD = shape({
+const RECORD = shape(
+  {
   schema: oneOf(SCHEMA),
   id: str,
   time: is((t) => typeof t === 'string' && ISO_UTC.test(t) && !Number.isNaN(Date.parse(t))),
@@ -207,7 +222,11 @@ const RECORD = shape({
   components: listOf(COMPONENT),
   total: numOrNull,
   partial: bool,
-});
+  },
+  // One component per id; GPU: one per preference.
+  (r) =>
+    unique(r['components'], (c) => `${String(c['id'])}:${String((c['gpu'] as Record<string, unknown> | undefined)?.['preference'] ?? '')}`),
+);
 
 /**
  * A fresh copy of `r` holding only the known fields, or why `r` is not a

@@ -45,7 +45,7 @@
   import History from './History.svelte';
   import { collectSystemInfo } from '../lib/sysinfo/index.ts';
   import { buildRecord, kernelRecord, multiRecord, type RunView } from '../lib/store/record.ts';
-  import { HISTORY_CAP, loadHistory, lostRuns, mergeRuns, saveHistory } from '../lib/store/history.ts';
+  import { HISTORY_CAP, loadHistory, mergeRuns, saveHistory } from '../lib/store/history.ts';
   import type { ComponentRecord, KernelRecord, RunRecord } from '../lib/store/schema.ts';
   import { excluded, refsFor } from '../lib/scoring/score.ts';
 
@@ -160,27 +160,33 @@
   }
 
   /** An import that would push saved runs out, waiting for the user to confirm. */
-  let pendingImport: { runs: RunRecord[]; question: string } | undefined = $state();
+  let pendingImport: { runs: RunRecord[]; lost: number; question: string } | undefined = $state();
 
-  function imported(x: RunRecord[] | string, confirmed = false) {
+  function imported(x: RunRecord[] | string, confirmed = 0) {
     pendingImport = undefined;
     if (typeof x === 'string') {
       historyMessage = x;
       return;
     }
     const m = mergeRuns(history, x);
-    const lost = lostRuns(history, m.runs);
-    if (lost > 0 && !confirmed) {
+    // `confirmed` is the count the user agreed to lose; ask again if it grew.
+    if (m.dropped > confirmed) {
       pendingImport = {
         runs: x,
-        question: `Only the newest ${HISTORY_CAP} runs are kept: importing would remove ${lost} of your saved run${lost === 1 ? '' : 's'}. Import anyway?`,
+        lost: m.dropped,
+        question: `Only the newest ${HISTORY_CAP} runs are kept: importing would remove ${m.dropped} of your saved run${m.dropped === 1 ? '' : 's'}. Import anyway?`,
       };
       return;
     }
-    const skipped = x.length - m.added;
+    const skipped = x.length - m.added - m.tooOld;
+    const s = (n: number) => (n === 1 ? '' : 's');
     setHistory(
       m.runs,
-      `Imported ${m.added} run${m.added === 1 ? '' : 's'}${skipped ? ` (${skipped} already in history)` : ''}${m.dropped ? `; ${m.dropped} oldest dropped (limit ${HISTORY_CAP})` : ''}.`,
+      `Imported ${m.added} run${s(m.added)}` +
+        (skipped ? ` (${skipped} already in history)` : '') +
+        (m.dropped ? `; ${m.dropped} oldest saved run${s(m.dropped)} dropped (limit ${HISTORY_CAP})` : '') +
+        (m.tooOld ? `; ${m.tooOld} too old to keep (limit ${HISTORY_CAP})` : '') +
+        '.',
     );
   }
 
@@ -236,6 +242,7 @@
   async function run() {
     const chosen = toRun;
     if (chosen.length === 0) return;
+    pendingImport = undefined; // history changes during a run; the user can import again after
     outcomes = [];
     multiOutcomes = [];
     memOutcomes = [];
@@ -585,7 +592,8 @@
     onchange={(runs) => setHistory(runs)}
     onimport={imported}
     pending={pendingImport?.question}
-    onconfirm={(yes) => (yes && pendingImport ? imported(pendingImport.runs, true) : (pendingImport = undefined))}
+    onconfirm={(yes) =>
+      yes && pendingImport ? imported(pendingImport.runs, pendingImport.lost) : (pendingImport = undefined)}
   />
 
   <p class="muted note">

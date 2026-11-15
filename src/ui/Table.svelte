@@ -53,7 +53,11 @@
   const before = $derived(cols.slice(0, refAt));
   const after = $derived(cols.slice(refAt));
 
+  // A failed output check outranks "hidden" (as in the orchestrator's error text).
+  const failed = (k: KernelRecord) => k.checksumOk === false;
+
   function status(k: KernelRecord): string {
+    if (failed(k)) return k.error ?? 'failed';
     if (k.hidden) return 'hidden';
     if (!k.valid) return k.error ?? 'failed';
     return k.noisy ? 'noisy' : 'ok';
@@ -93,7 +97,7 @@
         {@render cells(after, k)}
         <td
           data-testid="checksum"
-          data-ok={k.valid || k.hidden}
+          data-ok={!failed(k) && (k.valid || k.hidden)}
           data-valid={k.valid}
           data-noisy={k.noisy}
           data-weak-baseline={k.weakBaseline}

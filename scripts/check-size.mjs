@@ -36,11 +36,22 @@ const local = (from, url) => resolve(url.startsWith('/') ? dist : dirname(from),
 // chunks, recursively. Dynamic `import("x")` and `new Worker(...)` are lazy.
 const page = new Set([html]);
 const queue = [];
+// A referenced file that is missing means this script resolved a path wrong
+// (e.g. a non-root `base`); fail instead of silently counting less.
+const need = (f, from) => {
+  if (existsSync(f)) return f;
+  console.error(`${relative(dist, from)} references ${relative(dist, f)}, which does not exist.`);
+  process.exit(1);
+};
 for (const m of readFileSync(html, 'utf8').matchAll(/<(?:script|link)\b[^>]*?\b(?:src|href)="([^"]+)"/g)) {
   const url = m[1];
   if (/^(data:|https?:)/.test(url)) continue;
   const f = local(html, url);
-  if (['.js', '.css'].includes(extname(f)) && existsSync(f)) queue.push(f);
+  if (['.js', '.css'].includes(extname(f))) queue.push(need(f, html));
+}
+if (!queue.some((f) => extname(f) === '.js')) {
+  console.error('dist/index.html references no script; cannot find the page-load set.');
+  process.exit(1);
 }
 while (queue.length) {
   const f = queue.pop();
@@ -48,9 +59,9 @@ while (queue.length) {
   page.add(f);
   if (extname(f) !== '.js') continue;
   const code = readFileSync(f, 'utf8');
-  for (const m of code.matchAll(/(?:^|[;}\s])(?:import|export)\s*(?:[\w$*{}\s,]+?\s*from\s*)?["']([^"']+\.js)["']/g)) {
-    const dep = local(f, m[1]);
-    if (existsSync(dep)) queue.push(dep);
+  // Any non-identifier character may precede the keyword (`;`, `}`, a comment's `/`, ...).
+  for (const m of code.matchAll(/(?:^|[^\w$.])(?:import|export)\s*(?:[\w$*{}\s,]+?\s*from\s*)?["']([^"']+\.js)["']/g)) {
+    queue.push(need(local(f, m[1]), f));
   }
 }
 

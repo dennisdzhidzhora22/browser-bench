@@ -96,6 +96,98 @@ describe('a kernel cannot be both valid and hidden', () => {
   });
 });
 
+describe('a failed output check (checksumOk) is never valid', () => {
+  const kernel = (x: any) => x.components[0].kernels[0];
+
+  it('valid && checksumOk:false: the whole file is refused', () => {
+    const p = parse([tinyRecord('ok', at(0)), edited((r) => Object.assign(kernel(r), { valid: true, checksumOk: false }))]);
+    expect(message(p)).toMatch(/^Run 2 in the file is not valid/);
+  });
+
+  it('valid:false with checksumOk:false is fine, also together with hidden, and both flags survive a round trip', () => {
+    const r = runsOf(parse([edited((x) => Object.assign(kernel(x), { valid: false, hidden: true, checksumOk: false, value: null, error: 'output check failed: x' }))]))[0]!;
+    expect(r.components[0]!.kernels[0]).toMatchObject({ valid: false, hidden: true, checksumOk: false, error: 'output check failed: x' });
+    const again = runsOf(parseExport(exportText([r])))[0]!;
+    expect(again.components[0]!.kernels[0]!.checksumOk).toBe(false);
+  });
+
+  it('valid with checksumOk:true, or without the key (older records), is fine', () => {
+    expect(runsOf(parse([edited((x) => Object.assign(kernel(x), { checksumOk: true }))]))[0]!.components[0]!.kernels[0]!.valid).toBe(true);
+    expect(runsOf(parse([edited(() => {})]))[0]!.components[0]!.kernels[0]!.valid).toBe(true);
+  });
+
+  it.each(['no', 0, 1, null, {}])('checksumOk %j (not a boolean) is refused', (v) => {
+    expect(message(parse([edited((x) => Object.assign(kernel(x), { checksumOk: v }))]))).toMatch(/Run 1/);
+  });
+
+  it('an all-cores kernel is held to the same rule', () => {
+    const p = parse([edited((x) => Object.assign(x.components[1].kernels[0], { valid: true, checksumOk: false }))]);
+    expect(message(p)).toMatch(/Run 1/);
+  });
+});
+
+describe('sample counts are integers of at least 0', () => {
+  it.each([-1, 1.5, 0.1, '5', null, true])('samples %j is refused', (n) => {
+    expect(message(parse([edited((r) => (r.components[0].kernels[0].samples = n))]))).toMatch(/Run 1/);
+  });
+
+  it.each([-2, 2.5, '3', null])('singleSamples %j on an all-cores kernel is refused', (n) => {
+    expect(message(parse([edited((r) => (r.components[1].kernels[0].singleSamples = n))]))).toMatch(/Run 1/);
+  });
+
+  it.each([0, 1, 5, 1000])('samples and singleSamples of %i are accepted', (n) => {
+    const r = runsOf(
+      parse([
+        edited((x) => {
+          x.components[0].kernels[0].samples = n;
+          x.components[1].kernels[0].singleSamples = n;
+        }),
+      ]),
+    )[0]!;
+    expect(r.components[0]!.kernels[0]!.samples).toBe(n);
+    expect(r.components[1]!.kernels[0]!.singleSamples).toBe(n);
+  });
+});
+
+describe('keyed lists must be unique', () => {
+  it('two kernels with the same key in one component: the whole file is refused', () => {
+    const p = parse([tinyRecord('ok', at(0)), edited((r) => (r.components[0].kernels[1].key = r.components[0].kernels[0].key))]);
+    expect(message(p)).toMatch(/^Run 2 in the file is not valid/);
+  });
+
+  it('the same kernel key in two different components is fine', () => {
+    const r = completeRecord();
+    const keys = (id: string) => r.components.find((c) => c.id === id)!.kernels.map((k) => k.key);
+    expect(keys('cpu-single').filter((k) => keys('cpu-multi').includes(k)).length).toBeGreaterThan(0);
+    expect(runsOf(parse([r]))).toHaveLength(1);
+  });
+
+  it('two components with the same id (not GPU) are refused', () => {
+    const p = parse([edited((r) => r.components.push(JSON.parse(JSON.stringify(r.components[0]))))]);
+    expect(message(p)).toMatch(/Run 1/);
+  });
+
+  it('two GPU components with the same preference are refused', () => {
+    const p = parse([edited((r) => (r.components[4].gpu.preference = r.components[3].gpu.preference))]);
+    expect(message(p)).toMatch(/Run 1/);
+  });
+
+  it('two GPU components with different preferences are fine (the Both mode)', () => {
+    const r = runsOf(parse([completeRecord()]))[0]!;
+    expect(r.components.filter((c) => c.id === 'gpu').map((c) => c.gpu!.preference)).toEqual(['high-performance', 'low-power']);
+  });
+
+  it('a duplicate in a stored history is refused on load like any invalid file (empty history plus a message)', () => {
+    const s = new FakeStore();
+    const dup = JSON.parse(JSON.stringify(tinyRecord('dup', at(1))));
+    dup.components[0].kernels.push({ ...dup.components[0].kernels[0] });
+    s.data.set(HISTORY_KEY, JSON.stringify({ format: 'browser-bench', schema: SCHEMA, runs: [dup, tinyRecord('fine', at(0))] }));
+    const loaded = loadHistory(s);
+    expect(loaded.runs).toEqual([]);
+    expect(loaded.error).toMatch(/could not be read/);
+  });
+});
+
 describe('unknown keys are dropped, at every level', () => {
   it('junk keys are neither kept nor re-exported', () => {
     const r = edited((x) => {
@@ -155,7 +247,9 @@ describe('history cap and ordering', () => {
     const runs = Array.from({ length: HISTORY_CAP + 1 }, (_, i) => tinyRecord(`r${i}`, at(i)));
     const m = mergeRuns([], runs);
     expect(m.runs).toHaveLength(HISTORY_CAP);
-    expect(m.dropped).toBe(1);
+    expect(m.added).toBe(HISTORY_CAP);
+    expect(m.tooOld).toBe(1); // into an empty history the oldest new run is the one cut: nothing saved is lost
+    expect(m.dropped).toBe(0);
     expect(m.runs.some((r) => r.id === 'r0')).toBe(false);
     const s = new FakeStore();
     expect(saveHistory(m.runs, s)).toBeUndefined();

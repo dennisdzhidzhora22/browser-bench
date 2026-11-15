@@ -59,8 +59,8 @@
   {#if pending}
     <p class="warn" data-testid="history-confirm">
       {pending}
-      <button onclick={() => onconfirm(true)} data-testid="history-confirm-yes">Import</button>
-      <button onclick={() => onconfirm(false)} data-testid="history-confirm-no">Cancel</button>
+      <button onclick={() => onconfirm(true)} {disabled} data-testid="history-confirm-yes">Import</button>
+      <button onclick={() => onconfirm(false)} {disabled} data-testid="history-confirm-no">Cancel</button>
     </p>
   {/if}
   <p>
