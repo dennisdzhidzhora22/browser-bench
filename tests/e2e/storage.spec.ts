@@ -286,10 +286,22 @@ test.describe('M5 storage: cleanup', () => {
       .toContain('storage_seq_write.bin');
     expect(await testDirs(page)).toHaveLength(1);
 
+    // The page says it is removing the files while it retries the delete. That text can be brief, so record every
+    // text the progress line takes from now on instead of racing to read it.
+    await page.evaluate(() => {
+      const w = window as unknown as { __progress: string[] };
+      w.__progress = [];
+      const el = document.querySelector('[data-testid="progress"]')!;
+      const note = () => w.__progress.push(el.textContent ?? '');
+      note();
+      new MutationObserver(note).observe(el, { childList: true, characterData: true, subtree: true });
+    });
     await cancel.click();
 
     // 'Cancelled' appears after the page has finished removing the directory (up to 15 s of retries).
     await expect(page.getByTestId('status')).toHaveText('Cancelled', { timeout: 60_000 });
+    const seen = await page.evaluate(() => (window as unknown as { __progress: string[] }).__progress);
+    expect(seen.some((t) => t.includes('Cancelling: removing test files')), JSON.stringify(seen)).toBe(true);
     await expect(page.getByTestId('error')).toHaveCount(0);
     await expect(page.getByTestId('cancel')).toHaveCount(0);
     await expect(page.getByTestId('run')).toBeEnabled();
@@ -297,6 +309,38 @@ test.describe('M5 storage: cleanup', () => {
     expect(await rootEntries(page)).toEqual([]);
     // It never finished, so it must not show every storage row as done.
     await expect(page.getByTestId('checksum')).not.toHaveCount(STORAGE_ROWS.length);
+  });
+
+  test('a directory whose Web Lock is held (a live run in another tab) survives the sweep; stale ones are removed', async ({
+    page,
+  }) => {
+    await onlyStorage(page);
+    await page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      for (const name of ['bb-storage-held', 'bb-storage-stale']) {
+        const d = await root.getDirectoryHandle(name, { create: true });
+        await d.getFileHandle('storage_seq_write.bin', { create: true });
+      }
+      // Another "run" holds the lock of one directory for as long as this page lives.
+      void navigator.locks.request('bb-storage-held', () => new Promise<void>(() => {}));
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(async () => ((await navigator.locks.query()).held ?? []).some((l) => l.name === 'bb-storage-held')),
+      )
+      .toBe(true);
+    expect(await testDirs(page)).toEqual(['bb-storage-held', 'bb-storage-stale']);
+
+    await runAndWait(page); // the pre-run sweep and the run's own cleanup both happen in here
+
+    // Only this run's own directory and the stale one are gone: the held one and its file are untouched.
+    expect(await testDirs(page)).toEqual(['bb-storage-held']);
+    expect(await testFiles(page)).toEqual(['storage_seq_write.bin']);
+    await expectValidRows(page, STORAGE_ROWS);
+
+    // Once its holder is gone (the page unloads, the browser drops the lock) the next page load sweeps it.
+    await page.reload();
+    await expect.poll(() => testDirs(page), { timeout: 30_000 }).toEqual([]);
   });
 
   test('can run again after a cancel', async ({ page }) => {

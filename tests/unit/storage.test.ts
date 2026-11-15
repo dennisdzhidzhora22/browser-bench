@@ -16,6 +16,7 @@ import {
   storageDefsFor,
   storageKernels,
   sweepRunDirs,
+  withRunLock,
 } from '../../src/lib/bench/storage/index.ts';
 import {
   BLOCK,
@@ -31,6 +32,7 @@ import {
 } from '../../src/lib/bench/storage/types.ts';
 import { defKey, type KernelDef, type SizeId } from '../../src/lib/bench/types.ts';
 import {
+  Cancelled,
   resultToOutcome,
   SAMPLING,
   startRun,
@@ -366,6 +368,132 @@ describe('run directory helpers (fake OPFS root)', () => {
       },
     });
     await expect(sweepRunDirs()).resolves.toBeUndefined();
+  });
+});
+
+// ───────────────────────── Web Locks around a run directory ─────────────────────────
+
+/** The part of navigator.locks the page uses: exclusive locks by name, with `ifAvailable`. */
+class FakeLocks {
+  readonly held = new Set<string>();
+  readonly asked: { name: string; ifAvailable: boolean }[] = [];
+  async request<T>(
+    name: string,
+    a: { ifAvailable?: boolean } | ((lock: { name: string } | null) => Promise<T> | T),
+    b?: (lock: { name: string } | null) => Promise<T> | T,
+  ): Promise<T> {
+    const opts = typeof a === 'function' ? {} : a;
+    const cb = (typeof a === 'function' ? a : b)!;
+    this.asked.push({ name, ifAvailable: opts.ifAvailable === true });
+    if (this.held.has(name)) {
+      if (opts.ifAvailable) return cb(null);
+      while (this.held.has(name)) await new Promise((r) => setTimeout(r, 1));
+    }
+    this.held.add(name);
+    try {
+      return await cb({ name });
+    } finally {
+      this.held.delete(name);
+    }
+  }
+}
+
+describe('withRunLock and the sweep (faked navigator.locks)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function setup(withLocks = true): { fs: FakeFs; locks: FakeLocks } {
+    const fs = new FakeFs();
+    const locks = new FakeLocks();
+    vi.stubGlobal('navigator', { storage: { getDirectory: async () => fs.root }, ...(withLocks ? { locks } : {}) });
+    return { fs, locks };
+  }
+
+  it('passes the result through, holding the lock named after the directory only while fn runs', async () => {
+    const { locks } = setup();
+    let during: boolean | undefined;
+    const r = await withRunLock('bb-storage-x', async () => {
+      during = locks.held.has('bb-storage-x');
+      return 42;
+    });
+    expect(r).toBe(42);
+    expect(during).toBe(true);
+    expect(locks.held.size).toBe(0);
+    expect(locks.asked).toEqual([{ name: 'bb-storage-x', ifAvailable: false }]);
+  });
+
+  it('passes a rejection through unchanged (same object) and still releases the lock', async () => {
+    const { locks } = setup();
+    const boom = new Error('boom');
+    await expect(
+      withRunLock('bb-storage-x', async () => {
+        throw boom;
+      }),
+    ).rejects.toBe(boom);
+    expect(locks.held.size).toBe(0);
+  });
+
+  it('a Cancelled rejection stays a Cancelled (the page tells it apart from a failure)', async () => {
+    const { locks } = setup();
+    const err = await withRunLock('bb-storage-x', async () => {
+      throw new Cancelled();
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Cancelled);
+    expect(locks.held.size).toBe(0);
+  });
+
+  it('without Web Locks it just runs fn: result and rejection both pass through', async () => {
+    setup(false);
+    expect(await withRunLock('bb-storage-x', async () => 'ok')).toBe('ok');
+    const boom = new Error('nope');
+    await expect(withRunLock('bb-storage-x', () => Promise.reject(boom))).rejects.toBe(boom);
+    await expect(withRunLock('bb-storage-x', () => Promise.reject(new Cancelled()))).rejects.toBeInstanceOf(Cancelled);
+  });
+
+  it('sweepRunDirs skips a directory whose lock is held (a live run in another tab) and removes the others', async () => {
+    const { fs, locks } = setup();
+    await fs.root.getDirectoryHandle('bb-storage-live', { create: true });
+    await fs.root.getDirectoryHandle('bb-storage-stale', { create: true });
+    await fs.root.getDirectoryHandle('keep', { create: true });
+    locks.held.add('bb-storage-live');
+    await sweepRunDirs();
+    expect(fs.root.names()).toEqual(['bb-storage-live', 'keep']);
+    // Each directory was asked about without waiting.
+    expect(locks.asked.every((a) => a.ifAvailable)).toBe(true);
+    expect(locks.asked.map((a) => a.name).sort()).toEqual(['bb-storage-live', 'bb-storage-stale']);
+    // The holder's lock is untouched; once it ends, the next sweep removes the directory.
+    expect(locks.held.has('bb-storage-live')).toBe(true);
+    locks.held.delete('bb-storage-live');
+    await sweepRunDirs();
+    expect(fs.root.names()).toEqual(['keep']);
+  });
+
+  it('a directory kept alive by withRunLock survives a sweep that runs meanwhile', async () => {
+    const { fs } = setup();
+    const dir = newRunDir();
+    await fs.root.getDirectoryHandle(dir, { create: true });
+    let swept = false;
+    await withRunLock(dir, async () => {
+      await sweepRunDirs();
+      swept = true;
+      expect(fs.root.names()).toEqual([dir]);
+    });
+    expect(swept).toBe(true);
+    await sweepRunDirs(); // the run is over: now it is stale
+    expect(fs.root.names()).toEqual([]);
+  });
+
+  it('sweepRunDirs holds each directory\'s lock while removing it, so a run cannot start on it halfway', async () => {
+    const { fs, locks } = setup();
+    await fs.root.getDirectoryHandle('bb-storage-a', { create: true });
+    let heldDuring: boolean | undefined;
+    const real = fs.root.removeEntry.bind(fs.root);
+    fs.root.removeEntry = (async (name: string, o?: { recursive?: boolean }) => {
+      heldDuring = locks.held.has(name);
+      return real(name, o);
+    }) as typeof fs.root.removeEntry;
+    await sweepRunDirs();
+    expect(heldDuring).toBe(true);
+    expect(fs.root.names()).toEqual([]);
   });
 });
 
