@@ -1,9 +1,9 @@
 // The components a user can select. Kernels are filled in per milestone.
 import { cpuKernels } from './cpu/index.ts';
 import { gpuKernels } from './gpu/index.ts';
-import { memoryKernels } from './memory/index.ts';
+import { memCopyMulti, memoryKernels } from './memory/index.ts';
 import { storageKernels } from './storage/index.ts';
-import type { ComponentId, KernelDef } from './types.ts';
+import { defKey, type ComponentId, type KernelDef } from './types.ts';
 
 export interface ComponentDef {
   id: ComponentId;
@@ -21,3 +21,11 @@ export const components: readonly ComponentDef[] = [
   // The page scales the file size to the quota before a run (storageDefsFor).
   { id: 'storage', name: 'Storage', kernels: storageKernels },
 ];
+
+const allDefs: readonly KernelDef[] = [...cpuKernels, ...memoryKernels, memCopyMulti, ...gpuKernels, ...storageKernels];
+
+/** Display name and "stresses" text for a saved key; the key itself when this build no longer has it. */
+export function describe(key: string): { name: string; stresses: string } {
+  const d = allDefs.find((x) => defKey(x) === key);
+  return d ? { name: d.name, stresses: d.stresses } : { name: key, stresses: '' };
+}

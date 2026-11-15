@@ -145,7 +145,8 @@ run, the page asks for an adapter with each chosen preference and compares what 
 reports; if both give the same GPU it is tested once and the page says so. Each tested GPU
 gets its own results table, labelled with what the browser reports. Scoring (M6): each
 tested GPU gets its own GPU points; only the **Fast** (`high-performance`) GPU counts in the
-total (or the only GPU tested, when the user picked Power-saving).
+total. A Power-saving GPU never counts (owner decision, 2026-11-15): a run that tested only
+it has a partial total. "Same GPU" is reported only when both preferences found an adapter.
 
 Limit (verified on the owner's PC: Arc 140T + RTX 5070 Ti, both preferences gave the 140T):
 Chrome on Windows ignores the preference for WebGPU and uses one GPU for all its work, and
@@ -271,21 +272,33 @@ How it works (M6):
   whether it was scaled. Each kernel entry holds its key (`defKey`), unit, headline value
   (null when invalid), sample-time median/min/max in ms, spread, samples taken, valid / noisy /
   hidden flags and error; all-cores entries add worker count, 1-worker value, scaling and the
-  weak-baseline flag. No per-sample arrays; numbers keep 6 significant digits. A full run is
+  weak-baseline flag, and the 1-worker sample count. No per-sample arrays; numbers keep 6 significant digits. A full run is
   about 11 kB of JSON. Memory latency is stored as **ns per access** (unit `ns`).
 - **Constants.** `lib/scoring/constants.ts`: `SCORE_VERSION = 1` and one constant per
   `<component>/<defKey>` (e.g. `cpu-multi/sha256`, `memory/mem_latency:16384`), in the
   record's unit. The M6 constants are **provisional**: rounded medians of one Quick run on the
   development PC. M8 refreezes them from the owner's PC.
-- **Points.** Component points = `1000 × geomean(value / constant)` over the kernels that have
-  a constant and a valid value; units where smaller is better (`ns`) use
-  `constant / value`. All-cores CPU scores the combined (all workers) throughput. A component is
-  **partial** when one of its kernels is invalid, hidden or missing. Total = geomean of the
-  counted component points; **partial** unless all five components ran with points and none
-  is partial.
+- **Points.** Each kernel gives a ratio `value / constant` (`constant / value` for units
+  where smaller is better, `ns`). Variants of one kernel first combine into one sub-score by
+  their geomean: the 17 latency sizes are **one** sub-score (owner decision, 2026-11-15), so
+  memory points = `1000 × geomean(fill, copy, copy_mt, latency)`. Every other component has
+  one sub-score per kernel: points = `1000 × geomean(ratios)`. All-cores CPU scores the
+  combined (all workers) throughput. A component is **partial** when one of its scored
+  kernels (the component's defs, not the constants table) is invalid, hidden, missing or has
+  no constant. Total = geomean of the counted component points; **partial** unless all five
+  components ran with points and none is partial.
 - **No points, and never compared with references:** smoke-size runs ("smoke: no points"),
-  the WebGL2 fallback, and storage with a scaled-down file. Hidden and invalid results never
-  count.
+  the WebGL2 fallback, a software GPU adapter, storage with a scaled-down file, and all-cores
+  CPU when the worker count is not the core count ("N workers, not cores: no points"). For
+  memory, an all-cores copy on another worker count is left out of the points (the component
+  is partial) and gets no reference value. Hidden and invalid results never count.
+- **Reference cells compare like with like:** a partial component's points, and a partial
+  total, show "—" in the reference columns.
+- **Saved points are never trusted.** On load and import, every record of this build's
+  `scoreVersion` has its points, partial flags and total recomputed from its kernels. Each
+  record is rebuilt from its known fields only (unknown keys are dropped); `time` must be ISO
+  8601 UTC (`…Z`), core and worker counts integers ≥ 1, and a kernel cannot be both valid and
+  hidden.
 - **References.** `lib/scoring/references.json`: `[{ name, scoreVersion, results: { "<component>/<defKey>": value }, points: { "<component>": n, total: n } }]`.
   Empty until M8. The results tables show one extra column per entry whose `scoreVersion`
   matches this build's; with none, the column is hidden. Excluded components get no column.
@@ -299,8 +312,10 @@ How it works (M6):
 - **Export / import.** A file is `{ format: "browser-bench", schema: 1, runs: [...] }`,
   downloaded through a Blob URL (no network). Import checks the format marker, the schema
   version (unknown version: a clear message) and every field's type; any bad run rejects the
-  whole file with a message, and nothing throws into the UI. Runs already in history (same
-  id) are skipped. Runs with another `scoreVersion` import but show "not comparable (score
+  whole file with a message, and nothing throws into the UI. Files over 5 MB are refused
+  before they are read. Runs already in history (same id) are skipped. When an import would
+  push saved runs out at the 50-run cap, the page says how many and asks first (an in-page
+  Import / Cancel step). Runs with another `scoreVersion` import but show "not comparable (score
   vN)": their saved points are shown as saved, and no reference column appears.
 
 ## 7. Overhead rules for everything that is not a benchmark
@@ -309,7 +324,11 @@ These are requirements, and the reviewer checks each one.
 
 - Runtime dependencies: Svelte only. No UI kit, no chart library (draw charts on a canvas by
   hand), no state library, no router.
-- JS + CSS budget: 50 kB gzipped, excluding `.wasm`. Enforced by a script in `npm run check`.
+- JS + CSS budget (owner decision, 2026-11-15): what loads when the page opens
+  (`index.html`, the JS and CSS it references, and every chunk they import statically) is at
+  most 50 kB gzipped. Lazily loaded worker chunks are not in that total; the script lists them
+  separately and each must stay under 20 kB gzipped. `.wasm` is excluded. Enforced by
+  `scripts/check-size.mjs` in `npm run check`.
 - Each component's worker and WASM load lazily, only when selected.
 - No timers, `requestAnimationFrame`, observers or DOM writes while a Benchmark-mode
   measurement window is open. Progress is drawn between kernels.

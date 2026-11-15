@@ -1,17 +1,17 @@
 <script lang="ts">
   import { formatBytes, type StoragePlan } from '../lib/bench/storage/index.ts';
-  import type { KernelOutcome } from '../lib/harness/orchestrator.ts';
   import type { Reference } from '../lib/scoring/score.ts';
+  import type { KernelRecord } from '../lib/store/schema.ts';
   import Results from './Results.svelte';
 
   let {
-    outcomes,
+    kernels,
     plan,
     error,
     cleanup,
     refs = [],
   }: {
-    outcomes: KernelOutcome[];
+    kernels: KernelRecord[];
     plan: StoragePlan;
     /** Why the storage tests stopped (e.g. the worker could not start), if they did. */
     error: string | undefined;
@@ -38,7 +38,7 @@
   {#if error}
     <p class="error" data-testid="storage-error">{error}</p>
   {/if}
-  <Results {outcomes} {refs} prefix="storage" />
+  <Results {kernels} {refs} prefix="storage" />
   <p class="muted" data-testid="storage-caveat">
     OS file cache can inflate reads; the browser sits between the test and the disk. The test
     file is smaller than this PC's memory, so reads (and writes before the flush) may never reach

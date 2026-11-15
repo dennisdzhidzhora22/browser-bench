@@ -9,6 +9,9 @@
 // 16 logical cores, 16 workers, GPU "intel · xe-lpg" (WebGPU, Fast), 256 MiB
 // storage file. One run only; the 16 MB latency row was noisy (spread 73 %).
 // M8 refreezes them from the owner's PC (and bumps SCORE_VERSION if they change).
+//
+// Memory: the 17 mem_latency sizes share one kernel id, so they combine into
+// one latency sub-score before the component geomean (lib/scoring/score.ts).
 
 export const SCORE_VERSION = 1;
 

@@ -42,7 +42,8 @@
             <td class="r num">{shown(c.points)}{c.points != null && c.partial ? ' (partial)' : ''}
               {#if c.note}<span class="muted">{c.note}</span>{/if}</td>
             {#each refs as ref (ref.name)}
-              <td class="r num">{c.note ? '—' : shown(ref.points[c.id])}</td>
+              <!-- Like for like only: no reference beside an excluded or partial component. -->
+              <td class="r num">{c.note || c.partial ? '—' : shown(ref.points[c.id])}</td>
             {/each}
           </tr>
         {/each}
@@ -51,7 +52,7 @@
           <td class="r num" data-testid="total" data-partial={run.partial}>
             {shown(run.total)}{run.total != null && run.partial ? ' partial' : ''}
           </td>
-          {#each refs as ref (ref.name)}<td class="r num">{shown(ref.points['total'])}</td>{/each}
+          {#each refs as ref (ref.name)}<td class="r num">{run.partial ? '—' : shown(ref.points['total'])}</td>{/each}
         </tr>
       </tbody>
     </table>

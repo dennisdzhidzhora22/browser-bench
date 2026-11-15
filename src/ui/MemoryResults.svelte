@@ -1,46 +1,55 @@
 <script lang="ts">
-  import { formatBytes, latencyNs } from '../lib/bench/memory/index.ts';
-  import { defKey, type KernelDef } from '../lib/bench/types.ts';
-  import type { MultiOutcome } from '../lib/harness/multi.ts';
-  import type { KernelOutcome } from '../lib/harness/orchestrator.ts';
-  import type { Reference } from '../lib/scoring/score.ts';
+  import { describe } from '../lib/bench/components.ts';
+  import { formatBytes } from '../lib/bench/memory/index.ts';
+  import { offCores, type Reference } from '../lib/scoring/score.ts';
+  import type { KernelRecord } from '../lib/store/schema.ts';
+  import Table, { fmt, pct, value, type Column } from './Table.svelte';
 
   let {
-    outcomes,
-    multi,
+    kernels,
     smoke = false,
     refs = [],
-  }: { outcomes: KernelOutcome[]; multi: MultiOutcome[]; smoke?: boolean; refs?: Reference[] } = $props();
-  const ref = (r: Reference, def: KernelDef) => r.results[`memory/${defKey(def)}`];
+    cores,
+  }: {
+    kernels: KernelRecord[];
+    smoke?: boolean;
+    refs?: Reference[];
+    /** The run's core count: an all-cores copy on another worker count gets no reference. */
+    cores?: number;
+  } = $props();
 
-  const bandwidth = $derived(outcomes.filter((o) => o.def.id !== 'mem_latency'));
-  const latency = $derived(
-    outcomes
-      .filter((o) => o.def.id === 'mem_latency')
-      .map((o) => ({
-        o,
-        size: Number(o.def.variant),
-        ns: o.valid ? latencyNs(o.throughput) : undefined,
-      })),
-  );
+  const isLatency = (k: KernelRecord) => k.key.startsWith('mem_latency:');
+  /** Fill and copy (1 core), then the all-cores copy. */
+  const bandwidth = $derived(kernels.filter((k) => !isLatency(k)));
+  const latency = $derived(kernels.filter(isLatency));
+  const sizeOf = (k: KernelRecord) => Number(k.key.split(':')[1]);
+  const ref = (r: Reference, k: KernelRecord, small = 1) =>
+    offCores(k, cores) ? '—' : fmt(r.results[`memory/${k.key}`], small);
 
-  function fmt(n: number | undefined, digits = 1): string {
-    if (n === undefined || !Number.isFinite(n)) return '—';
-    return n >= 100 ? n.toFixed(0) : n.toFixed(digits);
-  }
-
-  function status(o: { hidden: boolean; checksumOk: boolean; noisy: boolean; error?: string }) {
-    if (o.hidden) return 'hidden';
-    if (!o.checksumOk) return o.error ?? 'failed';
-    return o.noisy ? 'noisy' : 'ok';
-  }
+  const bandwidthCols: Column[] = [
+    {
+      head: 'Test',
+      cell: (k) => describe(k.key).name,
+      sub: (k) =>
+        k.workers === undefined
+          ? `1 core · ${describe(k.key).stresses}`
+          : `${k.workers} workers · ${describe(k.key).stresses}${k.workers < 8 ? ' · few workers: total may fit in cache' : ''}`,
+    },
+    { head: 'Result', num: true, cell: (k) => value(k, 1), testid: 'value' },
+    { head: 'Unit', cell: (k) => k.unit },
+    { head: 'Spread', num: true, cell: (k) => pct(k.ms && k.spread) },
+  ];
+  const latencyCols: Column[] = [
+    { head: 'Size', cell: (k) => `${formatBytes(sizeOf(k))}${smoke ? ' (smoke run: 4 KB)' : ''}` },
+    { head: 'ns per access', num: true, cell: (k) => value(k), testid: 'value' },
+  ];
 
   let canvas: HTMLCanvasElement | undefined = $state();
 
   // Hand-drawn chart (no chart library, SPEC section 7). x: log2 of the
   // working-set size; y: log10 of ns per access. Steps show cache levels.
   $effect(() => {
-    const points = latency.filter((p) => p.ns !== undefined) as { size: number; ns: number }[];
+    const points = latency.filter((k) => k.valid && k.value !== null).map((k) => ({ size: sizeOf(k), ns: k.value! }));
     const c = canvas;
     if (!c) return;
     const ctx = c.getContext('2d');
@@ -101,73 +110,27 @@
   });
 </script>
 
-<table data-testid="memory-results">
-  <thead>
-    <tr>
-      <th>Test</th>
-      <th class="r">Result</th>
-      <th>Unit</th>
-      {#each refs as r (r.name)}<th class="r">{r.name}</th>{/each}
-      <th class="r">Spread</th>
-      <th>Check</th>
-    </tr>
-  </thead>
-  <tbody>
-    {#each bandwidth as o (defKey(o.def))}
-      <tr data-testid="mem-row-{o.def.id}">
-        <td>{o.def.name} <span class="muted">1 core · {o.def.stresses}</span></td>
-        <td class="r num" data-testid="value">{o.valid ? fmt(o.throughput) : '—'}</td>
-        <td>{o.def.unit}</td>
-        {#each refs as r (r.name)}<td class="r num">{fmt(ref(r, o.def))}</td>{/each}
-        <td class="r num">{o.stats ? `${(o.stats.spread * 100).toFixed(1)} %` : '—'}</td>
-        <td data-testid="checksum" data-ok={o.checksumOk} data-valid={o.valid}>{status(o)}</td>
-      </tr>
-    {/each}
-    {#each multi as o (defKey(o.def))}
-      <tr data-testid="mem-row-{o.def.id}-multi">
-        <td>
-          {o.def.name}
-          <span class="muted">
-            {o.workers} workers · {o.def.stresses}{o.workers < 8
-              ? ' · few workers: total may fit in cache'
-              : ''}
-          </span>
-        </td>
-        <td class="r num" data-testid="value">{o.valid ? fmt(o.all?.throughput) : '—'}</td>
-        <td>{o.def.unit}</td>
-        {#each refs as r (r.name)}<td class="r num">{fmt(ref(r, o.def))}</td>{/each}
-        <td class="r num">{o.all ? `${(o.all.stats.spread * 100).toFixed(1)} %` : '—'}</td>
-        <td data-testid="checksum" data-ok={o.checksumOk} data-valid={o.valid}>{status(o)}</td>
-      </tr>
-    {/each}
-  </tbody>
-</table>
+<Table
+  rows={bandwidth}
+  cols={bandwidthCols}
+  rowid={(k) => `mem-row-${k.key}${k.workers === undefined ? '' : '-multi'}`}
+  testid="memory-results"
+  {refs}
+  refAt={3}
+  {ref}
+/>
 
 {#if latency.length > 0}
   <h3>Latency by working-set size</h3>
   <canvas bind:this={canvas} class="chart" data-testid="latency-chart"></canvas>
-  <table>
-    <thead>
-      <tr>
-        <th>Size</th>
-        <th class="r">ns per access</th>
-        {#each refs as r (r.name)}<th class="r">{r.name}</th>{/each}
-        <th>Check</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each latency as p (p.size)}
-        <tr data-testid="latency-row-{p.size}">
-          <td>{formatBytes(p.size)}{smoke ? ' (smoke run: 4 KB)' : ''}</td>
-          <td class="r num" data-testid="value">{fmt(p.ns, 2)}</td>
-          {#each refs as r (r.name)}<td class="r num">{fmt(ref(r, p.o.def), 2)}</td>{/each}
-          <td data-testid="checksum" data-ok={p.o.checksumOk} data-valid={p.o.valid}>
-            {status(p.o)}
-          </td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
+  <Table
+    rows={latency}
+    cols={latencyCols}
+    rowid={(k) => `latency-row-${sizeOf(k)}`}
+    {refs}
+    refAt={2}
+    ref={(r, k) => ref(r, k, 2)}
+  />
   <p class="muted">
     Steps up mostly mark the working set outgrowing a cache level (L1, L2, L3, then RAM). Past
     a few MB, part of each step is address-translation (TLB) misses, which is what random access

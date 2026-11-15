@@ -1,13 +1,25 @@
-// Enforces the JS + CSS budget (docs/SPEC.md, section 7): 50 kB gzipped in
-// total, .wasm excluded. Run after `vite build`.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, extname, join, relative } from 'node:path';
+// Enforces the JS + CSS budget (docs/SPEC.md, section 7), gzipped, .wasm
+// excluded. Run after `vite build`.
+//
+// - Page load: dist/index.html, the scripts and stylesheets it references,
+//   and every chunk those import statically. 50 kB in total.
+// - Everything else (the lazily loaded worker chunks) is listed separately,
+//   with a cap of 20 kB per chunk.
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-const BUDGET_BYTES = 50 * 1024;
+const PAGE_BUDGET_BYTES = 50 * 1024;
+const WORKER_CAP_BYTES = 20 * 1024;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
+const html = join(dist, 'index.html');
+
+if (!existsSync(html)) {
+  console.error('dist/index.html not found. Run `npm run build` first.');
+  process.exit(1);
+}
 
 function walk(dir) {
   return readdirSync(dir).flatMap((name) => {
@@ -16,22 +28,56 @@ function walk(dir) {
   });
 }
 
-let files;
-try {
-  files = walk(dist).filter((f) => ['.js', '.css', '.html'].includes(extname(f)));
-} catch {
-  console.error('dist/ not found. Run `npm run build` first.');
-  process.exit(1);
+/** A URL from the built files, as a path under dist/. */
+const local = (from, url) => resolve(url.startsWith('/') ? dist : dirname(from), url.replace(/^\//, ''));
+
+// Page-load set: index.html's <script src> and <link href> (stylesheet,
+// modulepreload), then static `import ... from "x"` / `import "x"` in those
+// chunks, recursively. Dynamic `import("x")` and `new Worker(...)` are lazy.
+const page = new Set([html]);
+const queue = [];
+for (const m of readFileSync(html, 'utf8').matchAll(/<(?:script|link)\b[^>]*?\b(?:src|href)="([^"]+)"/g)) {
+  const url = m[1];
+  if (/^(data:|https?:)/.test(url)) continue;
+  const f = local(html, url);
+  if (['.js', '.css'].includes(extname(f)) && existsSync(f)) queue.push(f);
+}
+while (queue.length) {
+  const f = queue.pop();
+  if (page.has(f)) continue;
+  page.add(f);
+  if (extname(f) !== '.js') continue;
+  const code = readFileSync(f, 'utf8');
+  for (const m of code.matchAll(/(?:^|[;}\s])(?:import|export)\s*(?:[\w$*{}\s,]+?\s*from\s*)?["']([^"']+\.js)["']/g)) {
+    const dep = local(f, m[1]);
+    if (existsSync(dep)) queue.push(dep);
+  }
 }
 
+const rel = (f) => relative(dist, f).split(sep).join('/');
+const gz = (f) => gzipSync(readFileSync(f), { level: 9 }).length;
+const kb = (n) => `${(n / 1024).toFixed(2).padStart(8)} kB`;
+let failed = false;
+
 let total = 0;
-for (const f of files) {
-  const gz = gzipSync(readFileSync(f), { level: 9 }).length;
-  total += gz;
-  console.log(`${(gz / 1024).toFixed(2).padStart(8)} kB  ${relative(dist, f)}`);
+console.log('Page load:');
+for (const f of page) {
+  const n = gz(f);
+  total += n;
+  console.log(`${kb(n)}  ${rel(f)}`);
 }
-console.log(`${(total / 1024).toFixed(2).padStart(8)} kB  total (budget ${BUDGET_BYTES / 1024} kB)`);
-if (total > BUDGET_BYTES) {
-  console.error('Over budget.');
-  process.exit(1);
+console.log(`${kb(total)}  page-load total (budget ${PAGE_BUDGET_BYTES / 1024} kB)`);
+if (total > PAGE_BUDGET_BYTES) {
+  console.error('Page load is over budget.');
+  failed = true;
 }
+
+const lazy = walk(dist).filter((f) => ['.js', '.css'].includes(extname(f)) && !page.has(f));
+console.log(`Loaded lazily (cap ${WORKER_CAP_BYTES / 1024} kB each):`);
+for (const f of lazy) {
+  const n = gz(f);
+  const over = n > WORKER_CAP_BYTES;
+  console.log(`${kb(n)}  ${rel(f)}${over ? '  OVER CAP' : ''}`);
+  if (over) failed = true;
+}
+if (failed) process.exit(1);

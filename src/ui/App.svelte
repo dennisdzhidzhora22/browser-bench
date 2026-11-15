@@ -44,9 +44,9 @@
   import Points from './Points.svelte';
   import History from './History.svelte';
   import { collectSystemInfo } from '../lib/sysinfo/index.ts';
-  import { buildRecord, toView, type RunView } from '../lib/store/record.ts';
-  import { loadHistory, mergeRuns, saveHistory } from '../lib/store/history.ts';
-  import type { ComponentRecord, RunRecord } from '../lib/store/schema.ts';
+  import { buildRecord, kernelRecord, multiRecord, type RunView } from '../lib/store/record.ts';
+  import { HISTORY_CAP, loadHistory, lostRuns, mergeRuns, saveHistory } from '../lib/store/history.ts';
+  import type { ComponentRecord, KernelRecord, RunRecord } from '../lib/store/schema.ts';
   import { excluded, refsFor } from '../lib/scoring/score.ts';
 
   const isolated = globalThis.crossOriginIsolated === true;
@@ -104,39 +104,89 @@
     historyMessage = saveHistory(runs) ?? note;
   }
 
+  /** What the results tables show: the live run's outcomes, converted as each kernel finishes, or a saved run's. */
+  interface Rows {
+    single: KernelRecord[];
+    multi: KernelRecord[];
+    memory: KernelRecord[];
+    /** One list per entry of gpuRuns. */
+    gpu: KernelRecord[][];
+    storage: KernelRecord[];
+  }
+  const kernelsOf = (r: RunRecord, id: ComponentId) => r.components.find((c) => c.id === id)?.kernels ?? [];
+  const rows: Rows = $derived(
+    view && viewSaved
+      ? {
+          single: kernelsOf(view, 'cpu-single'),
+          multi: kernelsOf(view, 'cpu-multi'),
+          memory: kernelsOf(view, 'memory'),
+          gpu: view.components.filter((c) => c.id === 'gpu' && c.gpu).map((c) => c.kernels),
+          storage: kernelsOf(view, 'storage'),
+        }
+      : {
+          single: outcomes.map(kernelRecord),
+          multi: multiOutcomes.map(multiRecord),
+          memory: [...memOutcomes.map(kernelRecord), ...memMulti.map(multiRecord)],
+          gpu: gpuRuns.map((g) => g.outcomes.map(kernelRecord)),
+          storage: storageOutcomes.map(kernelRecord),
+        },
+  );
+
+  /** Shows a saved run: its record drives the tables and the GPU and storage headers. */
   function open(r: RunRecord) {
-    const v = toView(r);
-    outcomes = v.outcomes;
-    multiOutcomes = v.multiOutcomes;
-    memOutcomes = v.memOutcomes;
-    memMulti = v.memMulti;
-    gpuPlan = v.gpuPlan;
-    gpuRuns = v.gpuRuns;
-    storagePlan = v.storagePlan;
-    storageOutcomes = v.storageOutcomes;
-    storageError = v.storageError;
+    outcomes = [];
+    multiOutcomes = [];
+    memOutcomes = [];
+    memMulti = [];
+    storageOutcomes = [];
+    const gpus = r.components.filter((c) => c.id === 'gpu');
+    gpuPlan = gpus.length
+      ? { api: gpus[0]!.gpu?.api ?? 'none', targets: [], sameGpu: gpus.some((c) => c.sameGpu) }
+      : undefined;
+    gpuRuns = gpus.flatMap((c) =>
+      c.gpu ? [{ target: { preference: c.gpu.preference, label: c.gpu.label }, info: c.gpu.info, outcomes: [] }] : [],
+    );
+    const st = r.components.find((c) => c.id === 'storage');
+    storagePlan = !st
+      ? undefined
+      : st.fileBytes === undefined
+        ? { ok: false, message: st.error ?? 'not run' }
+        : { ok: true, fileBytes: st.fileBytes, scaled: st.scaled ?? false };
+    storageError = st?.fileBytes === undefined ? undefined : st.error;
     storageCleanup = undefined;
     view = r;
     viewSaved = true;
     phase = { kind: 'idle' };
   }
 
-  function imported(x: RunRecord[] | string) {
+  /** An import that would push saved runs out, waiting for the user to confirm. */
+  let pendingImport: { runs: RunRecord[]; question: string } | undefined = $state();
+
+  function imported(x: RunRecord[] | string, confirmed = false) {
+    pendingImport = undefined;
     if (typeof x === 'string') {
       historyMessage = x;
       return;
     }
     const m = mergeRuns(history, x);
+    const lost = lostRuns(history, m.runs);
+    if (lost > 0 && !confirmed) {
+      pendingImport = {
+        runs: x,
+        question: `Only the newest ${HISTORY_CAP} runs are kept: importing would remove ${lost} of your saved run${lost === 1 ? '' : 's'}. Import anyway?`,
+      };
+      return;
+    }
     const skipped = x.length - m.added;
     setHistory(
       m.runs,
-      `Imported ${m.added} run${m.added === 1 ? '' : 's'}${skipped ? ` (${skipped} already in history)` : ''}${m.dropped ? `; ${m.dropped} oldest dropped (limit 50)` : ''}.`,
+      `Imported ${m.added} run${m.added === 1 ? '' : 's'}${skipped ? ` (${skipped} already in history)` : ''}${m.dropped ? `; ${m.dropped} oldest dropped (limit ${HISTORY_CAP})` : ''}.`,
     );
   }
 
   /** References to show beside a component's raw numbers: none when not comparable. */
   const refsOf = (c: ComponentRecord | undefined) =>
-    view && c && !excluded(c, view.size) ? refsFor(view.scoreVersion) : [];
+    view && c && !excluded(c, view.size, view.system.cores) ? refsFor(view.scoreVersion) : [];
   const comp = (id: ComponentId, pref?: string) =>
     view?.components.find((c) => c.id === id && (!pref || c.gpu?.preference === pref));
 
@@ -315,7 +365,18 @@
         } else await single(c.name, c.kernels, outcomes);
       }
       phase = { kind: 'done' };
-      // Scoring and saving happen after the last measurement (SPEC 7).
+    } catch (err) {
+      phase =
+        err instanceof Cancelled
+          ? { kind: 'cancelled' }
+          : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+      return;
+    } finally {
+      active = undefined;
+    }
+    // Scoring and saving happen after the last measurement (SPEC 7). A failure
+    // here is reported in History; the run itself stays done.
+    try {
       const live: RunView = {
         outcomes,
         multiOutcomes,
@@ -330,12 +391,7 @@
       view = buildRecord(live, chosen.map((c) => c.id), mode, size, system);
       setHistory(mergeRuns(history, [view]).runs);
     } catch (err) {
-      phase =
-        err instanceof Cancelled
-          ? { kind: 'cancelled' }
-          : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
-    } finally {
-      active = undefined;
+      historyMessage = `This run could not be scored or saved: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
@@ -450,25 +506,30 @@
     <Points run={view} saved={viewSaved} />
   {/if}
 
-  {#if outcomes.length > 0}
+  {#if rows.single.length > 0}
     <h2>CPU — single core</h2>
-    <Results {outcomes} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
+    <Results kernels={rows.single} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
   {/if}
 
-  {#if multiOutcomes.length > 0}
+  {#if rows.multi.length > 0}
     <h2>CPU — all cores</h2>
-    <MultiResults outcomes={multiOutcomes} refs={refsOf(comp('cpu-multi'))} />
+    <MultiResults kernels={rows.multi} refs={refsOf(comp('cpu-multi'))} />
   {/if}
 
-  {#if memOutcomes.length > 0 || memMulti.length > 0}
+  {#if rows.memory.length > 0}
     <h2>Memory</h2>
-    <MemoryResults outcomes={memOutcomes} multi={memMulti} smoke={(view?.size ?? size) === 'smoke'} refs={refsOf(comp('memory'))} />
+    <MemoryResults
+      kernels={rows.memory}
+      smoke={(view?.size ?? size) === 'smoke'}
+      refs={refsOf(comp('memory'))}
+      cores={view?.system.cores}
+    />
   {/if}
 
   {#if gpuPlan}
     <h2>GPU</h2>
     {#if gpuPlan.api === 'none'}
-      <GpuResults outcomes={[]} info={{}} api="none" />
+      <GpuResults kernels={[]} info={{}} api="none" />
     {/if}
     {#if gpuPlan.sameGpu}
       <div class="muted" data-testid="gpu-same">
@@ -492,12 +553,12 @@
         </ul>
       </div>
     {/if}
-    {#each gpuRuns as g (g.target.preference)}
+    {#each gpuRuns as g, i (g.target.preference)}
       <h3 data-testid="gpu-run-{g.target.preference}">
         {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
       </h3>
       <GpuResults
-        outcomes={g.outcomes}
+        kernels={rows.gpu[i] ?? []}
         info={g.info}
         api={gpuPlan.api}
         refs={refsOf(comp('gpu', g.target.preference))}
@@ -508,7 +569,7 @@
   {#if storagePlan}
     <h2>Storage</h2>
     <StorageResults
-      outcomes={storageOutcomes}
+      kernels={rows.storage}
       plan={storagePlan}
       error={storageError}
       cleanup={storageCleanup}
@@ -523,6 +584,8 @@
     onopen={open}
     onchange={(runs) => setHistory(runs)}
     onimport={imported}
+    pending={pendingImport?.question}
+    onconfirm={(yes) => (yes && pendingImport ? imported(pendingImport.runs, true) : (pendingImport = undefined))}
   />
 
   <p class="muted note">

@@ -29,6 +29,8 @@ export interface KernelRecord {
   workers?: number;
   single?: number | null;
   singleSpread?: number;
+  /** Samples taken in the 1-worker baseline. */
+  singleSamples?: number;
   scaling?: number | null;
   weakBaseline?: boolean;
 }
@@ -83,102 +85,146 @@ export interface ExportFile {
   runs: RunRecord[];
 }
 
-// Strict shape check. Each field: a type code, '?' suffix = optional.
-// s string, n finite number, N number or null, b boolean, o object of strings.
-type Shape = Record<string, string | ((x: unknown) => boolean)>;
+// Strict shape check that also rebuilds: each parser returns a fresh copy
+// holding only the known keys, or BAD. Unknown keys (junk, an own
+// `__proto__`) are dropped, so they are neither stored nor re-exported.
+const BAD = Symbol('bad');
+type Parse = (x: unknown) => unknown;
 
 const isObj = (x: unknown): x is Record<string, unknown> =>
   typeof x === 'object' && x !== null && !Array.isArray(x);
-const TYPES: Record<string, (x: unknown) => boolean> = {
-  s: (x) => typeof x === 'string',
-  n: (x) => typeof x === 'number' && Number.isFinite(x),
-  N: (x) => x === null || TYPES['n']!(x),
-  b: (x) => typeof x === 'boolean',
-  o: (x) => isObj(x) && Object.values(x).every(TYPES['s']!),
-};
+const is =
+  (ok: (x: unknown) => boolean): Parse =>
+  (x) =>
+    ok(x) ? x : BAD;
+const finite = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+const str = is((x) => typeof x === 'string');
+const num = is(finite);
+const numOrNull = is((x) => x === null || finite(x));
+const bool = is((x) => typeof x === 'boolean');
+/** Integer >= 1 (core and worker counts). */
+const count = is((x) => Number.isInteger(x) && (x as number) >= 1);
+const oneOf = (...xs: unknown[]) => is((x) => xs.includes(x));
+const opt =
+  (p: Parse): Parse =>
+  (x) =>
+    x === undefined ? undefined : p(x);
+/** An object of strings (GPU adapter info), copied. */
+const strings: Parse = (x) =>
+  isObj(x) && Object.values(x).every((v) => typeof v === 'string') ? Object.fromEntries(Object.entries(x)) : BAD;
+const listOf =
+  (p: Parse): Parse =>
+  (x) => {
+    if (!Array.isArray(x)) return BAD;
+    const out: unknown[] = [];
+    for (const y of x) {
+      const c = p(y);
+      if (c === BAD) return BAD;
+      out.push(c);
+    }
+    return out;
+  };
+const shape =
+  (fields: Record<string, Parse>, ok: (o: Record<string, unknown>) => boolean = () => true): Parse =>
+  (x) => {
+    if (!isObj(x)) return BAD;
+    const known = new Map<string, unknown>();
+    for (const [k, p] of Object.entries(fields)) {
+      const c = p(Object.hasOwn(x, k) ? x[k] : undefined);
+      if (c === BAD) return BAD;
+      if (c !== undefined) known.set(k, c);
+    }
+    // Known keys only, in the input's order.
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(x)) if (known.has(k)) out[k] = known.get(k);
+    return ok(out) ? out : BAD;
+  };
 
-function fits(x: unknown, shape: Shape): boolean {
-  return (
-    isObj(x) &&
-    Object.entries(shape).every(([k, t]) => {
-      const v = x[k];
-      if (typeof t === 'function') return t(v);
-      return (t.endsWith('?') && v === undefined) || TYPES[t[0]!]!(v);
-    })
-  );
-}
+const KERNEL = shape(
+  {
+    key: str,
+    unit: str,
+    value: numOrNull,
+    ms: opt(shape({ median: num, min: num, max: num })),
+    spread: opt(num),
+    samples: opt(num),
+    valid: bool,
+    noisy: bool,
+    hidden: bool,
+    error: opt(str),
+    workers: opt(count),
+    single: opt(numOrNull),
+    singleSpread: opt(num),
+    singleSamples: opt(num),
+    scaling: opt(numOrNull),
+    weakBaseline: opt(bool),
+  },
+  // A result measured while the tab was hidden is never valid.
+  (k) => !(k['valid'] && k['hidden']),
+);
 
-const oneOf = (...xs: unknown[]) => (x: unknown) => xs.includes(x);
-const listOf = (shape: Shape) => (x: unknown) => Array.isArray(x) && x.every((y) => fits(y, shape));
-
-const KERNEL: Shape = {
-  key: 's',
-  unit: 's',
-  value: 'N',
-  ms: (m) => m === undefined || fits(m, { median: 'n', min: 'n', max: 'n' }),
-  spread: 'n?',
-  samples: 'n?',
-  valid: 'b',
-  noisy: 'b',
-  hidden: 'b',
-  error: 's?',
-  workers: 'n?',
-  single: 'N?',
-  singleSpread: 'n?',
-  scaling: 'N?',
-  weakBaseline: 'b?',
-};
-
-const COMPONENT: Shape = {
+const COMPONENT = shape({
   id: oneOf('cpu-single', 'cpu-multi', 'memory', 'gpu', 'storage'),
   kernels: listOf(KERNEL),
-  points: 'N',
-  partial: 'b',
-  note: 's?',
-  error: 's?',
-  gpu: (g) =>
-    g === undefined ||
-    fits(g, {
+  points: numOrNull,
+  partial: bool,
+  note: opt(str),
+  error: opt(str),
+  gpu: opt(
+    shape({
       preference: oneOf('high-performance', 'low-power'),
-      label: 's',
+      label: str,
       api: oneOf('webgpu', 'webgl2'),
-      info: 'o',
+      info: strings,
     }),
-  sameGpu: 'b?',
-  fileBytes: 'n?',
-  scaled: 'b?',
-};
+  ),
+  sameGpu: opt(bool),
+  fileBytes: opt(num),
+  scaled: opt(bool),
+});
 
-const RECORD: Shape = {
-  id: 's',
-  time: (t) => typeof t === 'string' && !Number.isNaN(Date.parse(t)),
+/** ISO 8601 UTC, as `Date.toISOString()` writes it: these sort as strings. */
+const ISO_UTC = /^\d{4}-\d\d-\d\dT[\d:.]+Z$/;
+
+const RECORD = shape({
+  schema: oneOf(SCHEMA),
+  id: str,
+  time: is((t) => typeof t === 'string' && ISO_UTC.test(t) && !Number.isNaN(Date.parse(t))),
   mode: oneOf('quick', 'full'),
   size: oneOf('smoke', 'standard'),
-  system: (x) =>
-    fits(x, {
-      browser: 's',
-      version: 's',
-      ua: 's',
-      platform: 's?',
-      cores: 'n',
-      deviceMemory: 'n?',
-      screen: 's',
-      isolated: 'b',
-      gpu: (g) => g === undefined || (Array.isArray(g) && g.every(TYPES['s']!)),
-    }),
+  scoreVersion: count,
+  system: shape({
+    browser: str,
+    version: str,
+    ua: str,
+    platform: opt(str),
+    cores: count,
+    deviceMemory: opt(num),
+    screen: str,
+    isolated: bool,
+    gpu: opt(listOf(str)),
+  }),
   components: listOf(COMPONENT),
-  total: 'N',
-  partial: 'b',
-};
+  total: numOrNull,
+  partial: bool,
+});
 
 /**
- * Why `r` is not a valid RunRecord of this schema, or undefined when it is.
- * Any scoreVersion is accepted: other versions load but are never compared.
+ * A fresh copy of `r` holding only the known fields, or why `r` is not a
+ * valid RunRecord of this schema. Any scoreVersion is accepted: other
+ * versions load but are never compared.
  */
-export function checkRecord(r: unknown): string | undefined {
+export function cleanRecord(r: unknown): RunRecord | string {
   if (!isObj(r)) return 'not an object';
   if (r['schema'] !== SCHEMA) return `unknown record format v${String(r['schema'])}`;
   const v = r['scoreVersion'];
   if (!(Number.isInteger(v) && (v as number) >= 1)) return 'bad scoreVersion';
-  return fits(r, RECORD) ? undefined : 'fields missing or of the wrong type';
+  const c = RECORD(r);
+  return c === BAD ? 'fields missing or of the wrong type' : (c as RunRecord);
+}
+
+/** Why `r` is not a valid RunRecord of this schema, or undefined when it is. */
+export function checkRecord(r: unknown): string | undefined {
+  const c = cleanRecord(r);
+  return typeof c === 'string' ? c : undefined;
 }

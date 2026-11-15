@@ -26,9 +26,10 @@ export const gpuFactories: Readonly<Record<string, GpuKernelFactory>> = {
   gpu_fragment_gl: createGpuFragmentGl,
 };
 
-/** By id, not identity: defs held in Svelte $state are proxies. */
-export function isFallback(def: KernelDef): boolean {
-  return fallbackKernels.some((k) => k.id === def.id);
+/** By def or saved key, not identity: defs held in Svelte $state are proxies. */
+export function isFallback(def: KernelDef | string): boolean {
+  const id = typeof def === 'string' ? def : def.id;
+  return fallbackKernels.some((k) => k.id === id);
 }
 
 export type GpuApi = 'webgpu' | 'webgl2' | 'none';
@@ -82,6 +83,9 @@ export async function planGpus(choice: GpuChoice): Promise<GpuPlan> {
     choice === 'both' ? ['high-performance', 'low-power'] : [choice];
   const dedupe = (all: GpuTarget[]): GpuPlan['targets'] =>
     all.filter((t, i) => all.findIndex((u) => u.label === t.label) === i);
+  // Same GPU only when every asked-for preference found an adapter and they matched.
+  const same = (found: GpuTarget[], targets: GpuTarget[]) =>
+    prefs.length > 1 && found.length === prefs.length && targets.length === 1;
 
   try {
     if (navigator.gpu) {
@@ -92,7 +96,7 @@ export async function planGpus(choice: GpuChoice): Promise<GpuPlan> {
       }
       if (found.length > 0) {
         const targets = dedupe(found);
-        return { api: 'webgpu', targets, sameGpu: prefs.length > 1 && targets.length === 1 };
+        return { api: 'webgpu', targets, sameGpu: same(found, targets) };
       }
     }
   } catch {
@@ -106,7 +110,7 @@ export async function planGpus(choice: GpuChoice): Promise<GpuPlan> {
     }
     if (found.length > 0) {
       const targets = dedupe(found);
-      return { api: 'webgl2', targets, sameGpu: prefs.length > 1 && targets.length === 1 };
+      return { api: 'webgl2', targets, sameGpu: same(found, targets) };
     }
   } catch {
     // none

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { SCORE_VERSION } from '../lib/scoring/constants.ts';
   import { download } from '../lib/store/export.ts';
-  import { parseExport } from '../lib/store/import.ts';
+  import { MAX_IMPORT_BYTES, parseExport } from '../lib/store/import.ts';
   import type { RunRecord } from '../lib/store/schema.ts';
 
   let {
@@ -11,6 +11,8 @@
     onopen,
     onchange,
     onimport,
+    pending,
+    onconfirm,
   }: {
     runs: RunRecord[];
     /** Last problem or result to report (save failed, import result, ...). */
@@ -20,6 +22,9 @@
     /** Replace the whole list (delete, clear). */
     onchange: (runs: RunRecord[]) => void;
     onimport: (runs: RunRecord[] | string) => void;
+    /** An import waiting for a yes/no, with the question to ask. */
+    pending?: string;
+    onconfirm: (yes: boolean) => void;
   } = $props();
 
   let confirmClear = $state(false);
@@ -35,6 +40,10 @@
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      onimport(`The file is larger than ${MAX_IMPORT_BYTES / 1024 / 1024} MB; browser-bench exports are much smaller.`);
+      return;
+    }
     try {
       const p = parseExport(await file.text());
       onimport('error' in p ? p.error : p.runs);
@@ -47,10 +56,23 @@
 <section data-testid="history">
   <h2>History</h2>
   {#if message}<p class="warn" data-testid="history-message">{message}</p>{/if}
+  {#if pending}
+    <p class="warn" data-testid="history-confirm">
+      {pending}
+      <button onclick={() => onconfirm(true)} data-testid="history-confirm-yes">Import</button>
+      <button onclick={() => onconfirm(false)} data-testid="history-confirm-no">Cancel</button>
+    </p>
+  {/if}
   <p>
     <label class="button">
       Import…
-      <input type="file" accept=".json,application/json" onchange={pick} {disabled} data-testid="history-import" />
+      <input
+        type="file"
+        accept=".json,application/json"
+        onchange={pick}
+        disabled={disabled || pending !== undefined}
+        data-testid="history-import"
+      />
     </label>
     {#if runs.length > 0}
       <button onclick={() => download(runs)} {disabled} data-testid="history-export-all">Export all</button>
@@ -82,7 +104,7 @@
             <td class="r num" data-testid="history-total">{label(r)}</td>
             <td>
               <button onclick={() => onopen(r)} {disabled} data-testid="history-open">Open</button>
-              <button onclick={() => download([r])} data-testid="history-export">Export</button>
+              <button onclick={() => download([r])} {disabled} data-testid="history-export">Export</button>
               <button onclick={() => onchange(runs.filter((x) => x.id !== r.id))} {disabled} data-testid="history-delete"
                 >Delete</button
               >
