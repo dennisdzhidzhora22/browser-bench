@@ -76,7 +76,10 @@
   let noLive = $state(false);
   let wake: WakeState | undefined = $state();
   /** Endurance / Stress chart: live, or the one just finished (Stress, cancelled). */
-  let loopView: { rec: EnduranceRecord; windows: number; stress: boolean } | undefined = $state();
+  // Raw: replaced whole once a second, never mutated, so Svelte need not proxy the series.
+  let loopView: { rec: EnduranceRecord; windows: number; stress: boolean } | undefined = $state.raw();
+  /** Benchmark mode: the window lost focus mid-run (Windows may then move the work to efficiency cores). */
+  let focusLost = $state(false);
   let elapsed = $state('');
   let stopLoop: (() => Promise<void>) | undefined = $state();
   const cores = Math.max(1, navigator.hardwareConcurrency || 1);
@@ -276,11 +279,25 @@
     const release = holdWakeLock((s) => {
       if (loop) wake = s;
     });
+    // Benchmark mode: note a focus loss, shown only after the run (no DOM
+    // writes mid-test). Unknown when the window never had focus (automation).
+    focusLost = false;
+    let focusSeen = document.hasFocus();
+    let lost = false;
+    const onFocus = () => (focusSeen = true);
+    const onBlur = () => (lost ||= focusSeen);
+    if (!loop) {
+      window.addEventListener('focus', onFocus);
+      window.addEventListener('blur', onBlur);
+    }
     try {
       await (loop ? runLoop(mode === 'stress') : runBenchmark(mode as RunMode));
     } finally {
       release();
       wake = undefined;
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+      focusLost = lost;
     }
   }
 
@@ -484,6 +501,7 @@
       return;
     }
     const ms = stress ? E.STRESS_MAX_MS : (testMs ?? minutes * 60_000);
+    const runNotes = [...notes];
     const windows = Math.ceil(ms / WINDOW_MS);
     const l = E.startLoops({ parts, windows });
     active = l;
@@ -494,18 +512,20 @@
       phase = { kind: 'running', index: 0, total: 1, current: 'Stopping' };
       await l.stop();
     };
-    const show = () => {
-      const rec = E.snapshot(l, ms);
-      const done = Math.max(0, ...rec.parts.map((p) => p.values.length));
+    const show = (live: boolean) => {
+      const rec = E.snapshot(l, ms, runNotes, live);
+      let done = 0;
+      for (const p of rec.parts) done = Math.max(done, p.values.length);
       loopView = { rec, windows: stress ? Math.max(done, 12) : windows, stress };
     };
     const t0 = performance.now();
     phase = { kind: 'running', index: 0, total: 1, current: stress ? 'Stress' : 'Endurance' };
     // At most one page update per second (SPEC 4); none with "no live updates".
     const timer = setInterval(() => {
+      l.checkFocus(); // no DOM work
       if (noLive) return;
       elapsed = E.clock(performance.now() - t0) + (stress ? '' : ` / ${E.clock(ms)}`);
-      show();
+      show(true);
     }, 1_000);
     try {
       await l.done;
@@ -516,7 +536,7 @@
       active = undefined;
       stopLoop = undefined;
     }
-    show();
+    show(false);
     if (cancelRequested) {
       phase = { kind: 'cancelled' };
       return;
@@ -635,6 +655,8 @@
       <p class="muted">
         Loops the selected parts at the same time and shows throughput over time. Memory runs its
         all-cores copy; storage is not looped (it would wear the drive).
+        <strong data-testid="focus-hint">Keep this window in front during the run.</strong> On Windows a
+        window in the background runs on the slower cores, so those windows are not counted.
       </p>
     {/if}
   </fieldset>
@@ -650,6 +672,7 @@
       <span class="muted" data-testid="wake">
         {wake === 'on' ? 'screen kept on' : wake ? 'the screen may sleep (no wake lock)' : ''}
       </span>
+      <span class="muted">· keep this window in front</span>
     {:else if phase.kind === 'running'}
       <button onclick={cancel} data-testid="cancel">Cancel</button>
       <span data-testid="progress">
@@ -660,6 +683,12 @@
         >Run</button
       >
       {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
+      {#if focusLost}
+        <span class="muted" data-testid="focus-lost">
+          · The window lost focus during the run: on Windows the work may have moved to slower cores, so
+          some results can be low.
+        </span>
+      {/if}
       {#if phase.kind === 'cancelled'}<span data-testid="status">Cancelled</span>{/if}
     {/if}
   </p>

@@ -11,5 +11,7 @@ export const mandelbrot: KernelDef = {
   expected: { smoke: 2_310_917_514, standard: 895_799_607 },
   // All-cores test: short runs (~30 ms) so fixed-time windows are fine-grained.
   multi: { size: 640, expected: 667_295_300 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 256, expected: 718_524_832 },
   work: (size) => (size * Math.floor((size * 3) / 4)) / 1e6,
 };

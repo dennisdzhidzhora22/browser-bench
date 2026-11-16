@@ -11,5 +11,7 @@ export const nbody: KernelDef = {
   expected: { smoke: 539_028_224, standard: 1_354_116_538 },
   // All-cores test: short runs (~30 ms) so fixed-time windows are fine-grained.
   multi: { size: 320, expected: 921_392_367 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 48, expected: 2_688_024_858 },
   work: (size) => size,
 };

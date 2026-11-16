@@ -11,7 +11,7 @@ import type { SampleStats } from '../harness/stats.ts';
 import { SCORE_VERSION } from '../scoring/constants.ts';
 import { rescore } from '../scoring/score.ts';
 import type { SystemInfo } from '../sysinfo/index.ts';
-import { dropOf } from '../harness/drop.ts';
+import { figuresOf } from '../harness/drop.ts';
 import {
   SCHEMA,
   type ComponentRecord,
@@ -155,24 +155,32 @@ const r4n = (x: number | null) => (x === null || !Number.isFinite(x) ? null : Nu
 /** Builds the record of a finished Endurance run. No components, so no points. */
 export function buildEnduranceRecord(
   endurance: Omit<EnduranceRecord, 'parts'> & {
-    parts: (Omit<EndurancePart, 'drop' | 'values' | 'base'> & { values: (number | null)[]; base: (number | null)[] })[];
+    parts: (Omit<EndurancePart, 'drop' | 'burst' | 'noisy' | 'values' | 'base'> & {
+      values: (number | null)[];
+      base: (number | null)[];
+    })[];
   },
   size: SizeId,
   system: SystemInfo,
 ): RunRecord {
-  return rescore({
+  // Not rescored: Endurance has no components and no points, and scoreTotal([])
+  // would mark the record partial.
+  return {
     schema: SCHEMA,
     id: crypto.randomUUID(),
     time: new Date().toISOString(),
     mode: 'endurance',
     endurance: {
       ...endurance,
-      parts: endurance.parts.map((p) => ({
-        ...p,
-        base: p.base.map((b) => (b === null ? null : r6(b))),
-        values: p.values.map(r4n),
-        drop: dropOf(p.values.map(r4n)),
-      })),
+      parts: endurance.parts.map((p) => {
+        const values = p.values.map(r4n);
+        return {
+          ...p,
+          base: p.base.map((b) => (b === null ? null : r6(b))),
+          values,
+          ...figuresOf(values, p.error),
+        };
+      }),
     },
     size,
     scoreVersion: SCORE_VERSION,
@@ -180,5 +188,5 @@ export function buildEnduranceRecord(
     components: [],
     total: null,
     partial: false,
-  });
+  };
 }

@@ -11,5 +11,7 @@ export const matmul: KernelDef = {
   expected: { smoke: 419_049_538, standard: 3_813_767_060 },
   // All-cores test: smaller size so one instance per core fits in memory.
   multi: { size: 512, expected: 490_095_203 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 288, expected: 682_264 },
   work: (n) => (2 * n * n * n) / 1e9,
 };

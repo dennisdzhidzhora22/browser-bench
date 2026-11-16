@@ -16,6 +16,8 @@ export const lz: KernelDef = {
   expected: { smoke: 1_494_155_333, standard: 3_626_520_757 },
   // All-cores test: smaller size so one instance per core fits in memory.
   multi: { size: 2_000_000, expected: 1_205_869_237 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 300_000, expected: 2_218_160_821 },
   // MB of input processed per run = size x passes / 1e6. Each pass compresses
   // every input byte once and decompresses it once (plus a verify compare); the
   // figure counts input bytes per pass, not both directions.

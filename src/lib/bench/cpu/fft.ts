@@ -11,5 +11,7 @@ export const fft: KernelDef = {
   expected: { smoke: 3_877_711_093, standard: 2_569_804_454 },
   // All-cores test: short runs (~30 ms) so fixed-time windows are fine-grained.
   multi: { size: 800, expected: 3_257_962_583 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 80, expected: 4_294_083_563 },
   work: (size) => size,
 };

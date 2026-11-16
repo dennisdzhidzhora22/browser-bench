@@ -175,15 +175,18 @@ export interface Measured {
 //   page                        worker
 //   loop {kernels, start, ...} ───▶ for each window w, for each kernel k:
 //                                   prepare (untimed), then run until the
-//                                   slice ends; store the rate in `out`
+//                                   slice ends; store the mean rate in `out`
+//                                   and the fastest rep's rate in `best`
 //                          ◀───   looped | error  (once, at the end)
 //
 // Windows are on the shared absolute clock (timeOrigin + now): window w is
 // [start + w*windowMs, start + (w+1)*windowMs), split into equal slices, one
 // per kernel, so every worker of a component runs the same kernel at the same
-// time without a barrier. A window the worker reaches late (a slow call, a
-// paused tab) keeps NaN for what it missed. Nothing is posted per window: the
-// page reads `out` and `control` (SharedArrayBuffers) at most once a second.
+// time without a barrier. A slice always runs at least one rep; one the
+// worker reaches more than a whole slice late (a real stall: a paused tab, a
+// starved thread) keeps NaN and counts in MISSED. Nothing is posted per
+// window: the page reads `out`, `best` and `control` (SharedArrayBuffers) at
+// most once a second.
 
 /** Indexes into a loop's Int32 control array. */
 export const LOOP = {
@@ -191,6 +194,8 @@ export const LOOP = {
   STOP: 0,
   /** Windows this worker has finished (written after each window). */
   DONE: 1,
+  /** Slices this worker skipped because it reached them more than a slice late. */
+  MISSED: 2,
   LENGTH: 4,
 } as const;
 
@@ -220,6 +225,13 @@ export interface LoopRequest {
    * in window w (CPU: reps/ms; GPU: reps/ms, a rep being one test iteration).
    */
   out: Float64Array;
+  /**
+   * Same layout as `out`: the rate of the slice's fastest rep (reps/ms; GPU:
+   * of its fastest batch). The series uses it: on hybrid CPUs the OS moves a
+   * thread between fast and slow cores, and the fastest rep shows the speed
+   * the core can still reach rather than where the thread happened to sit.
+   */
+  best: Float64Array;
 }
 
 export interface Looped {

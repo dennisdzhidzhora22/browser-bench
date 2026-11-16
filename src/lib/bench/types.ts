@@ -43,6 +43,12 @@ export interface KernelDef {
    * each timed window. Absent = use `standard`.
    */
   multi?: { size: number; expected: number };
+  /**
+   * Size for Endurance / Stress loops (CPU kernels): one rep must stay well
+   * under a slice (5 s / 11 kernels) even on a low-power core under full
+   * load, so about 5-13 ms on a fast core alone. Absent = the `multi` size.
+   */
+  loop?: { size: number; expected: number };
 }
 
 /** Unique key for lists: id plus variant. */

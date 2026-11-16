@@ -136,6 +136,8 @@ export function scoreTotal(components: readonly ComponentRecord[]): { total: num
  */
 export function rescore(r: RunRecord): RunRecord {
   if (r.scoreVersion !== SCORE_VERSION) return r;
+  // Endurance: no components, no points, never partial (scoreTotal([]) would say partial).
+  if (r.mode === 'endurance') return { ...r, total: null, partial: false };
   const components = r.components.map((c): ComponentRecord => {
     const { points: _points, partial: _partial, note: _note, ...rest } = c;
     const s = scoreComponent(c, r.size, r.system.cores);

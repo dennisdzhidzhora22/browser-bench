@@ -111,7 +111,7 @@ const now = () => performance.timeOrigin + performance.now();
  * until it ends. Outputs are validated once, after the loop (also after Stop).
  */
 async function loop(c: GpuContext, req: LoopRequest): Promise<void> {
-  const { control, out, windowMs, windows, start } = req;
+  const { control, out, best, windowMs, windows, start } = req;
   const nk = req.kernels.length;
   const ks: GpuKernel[] = [];
   gpuError = undefined;
@@ -128,24 +128,44 @@ async function loop(c: GpuContext, req: LoopRequest): Promise<void> {
     const stopped = () => Atomics.load(control, LOOP.STOP) !== 0;
     if (now() < start) await new Promise((r) => setTimeout(r, start - now()));
     const slice = windowMs / nk;
+    let missed = 0;
     let w = 0;
+    // Same slice rules as the CPU loop (runner.worker.ts): at least one batch,
+    // no batch expected to end more than half a batch late, skip only after a
+    // stall of more than a slice.
     while (w < windows && !stopped()) {
       const ws = start + w * windowMs;
       for (let k = 0; k < nk && !stopped(); k++) {
         const end = ws + (k + 1) * slice;
-        if (now() >= end) continue;
+        if (now() >= end + slice) {
+          Atomics.store(control, LOOP.MISSED, ++missed);
+          continue;
+        }
         let n = 0;
+        let fastest = Infinity;
+        let last: number;
         const t0 = now();
-        let t1: number;
+        let t1 = t0;
         do {
           await timeBatch(ks[k]!, reps[k]!);
           n += reps[k]!;
-          t1 = now();
-        } while (t1 < end && !stopped());
-        out[w * nk + k] = n / (t1 - t0);
+          const t = now();
+          last = t - t1;
+          if (last < fastest) fastest = last;
+          t1 = t;
+        } while (t1 + last / 2 < end && !stopped());
+        const mean = n / (t1 - t0);
+        out[w * nk + k] = mean;
+        best[w * nk + k] = fastest > 0 ? Math.max(reps[k]! / fastest, mean) : mean;
       }
+      if (stopped()) break; // a window cut short by Stop is not counted
       Atomics.store(control, LOOP.DONE, w + 1);
-      w = Math.max(w + 1, Math.floor((now() - start) / windowMs));
+      const next = Math.max(w + 1, Math.floor((now() - start) / windowMs));
+      if (next > w + 1) {
+        missed += (Math.min(next, windows) - w - 1) * nk;
+        Atomics.store(control, LOOP.MISSED, missed);
+      }
+      w = next;
     }
     if (!stopped()) Atomics.store(control, LOOP.DONE, windows);
     for (let i = 0; i < nk; i++) {

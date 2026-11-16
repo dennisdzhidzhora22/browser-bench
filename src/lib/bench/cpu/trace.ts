@@ -12,5 +12,7 @@ export const trace: KernelDef = {
   expected: { smoke: 2_755_351_516, standard: 4_013_853_055 },
   // All-cores test: short runs (~30 ms) so fixed-time windows are fine-grained.
   multi: { size: 512, expected: 1_577_120_549 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 192, expected: 2_562_150_530 },
   work: (w) => (w * ((w * 3) / 4) * 4) / 1e3,
 };

@@ -13,17 +13,24 @@ export function holdWakeLock(onState: (s: WakeState) => void): () => void {
   }
   let lock: WakeLockSentinel | undefined;
   let ended = false;
+  /** A request is in flight: a visibilitychange meanwhile must not take a second lock. */
+  let pending = false;
   const acquire = () => {
-    if (ended || document.hidden || (lock && !lock.released)) return;
+    if (ended || pending || document.hidden || (lock && !lock.released)) return;
+    pending = true;
     wl.request('screen').then(
       (l) => {
-        if (ended) void l.release();
+        pending = false;
+        if (ended) void l.release().catch(() => {});
         else {
           lock = l;
           onState('on');
         }
       },
-      () => onState('refused'),
+      () => {
+        pending = false;
+        onState('refused');
+      },
     );
   };
   const onVis = () => acquire();

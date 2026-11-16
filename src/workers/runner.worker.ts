@@ -160,55 +160,85 @@ function measureLoop(m: KernelModule, req: MeasureRequest): void {
  * until the slice ends. Every call's checksum is checked; a mismatch fails
  * the loop. Only `run`, the checksum compare, the STOP read and timer reads
  * sit between t0 and t1.
+ *
+ * A slice always runs at least one rep, and does not start a rep it expects
+ * to end more than half a rep past the slice end (expected = as long as the
+ * last one). Only a slice reached more than a whole slice late is skipped
+ * (NaN, counted in LOOP.MISSED). Loop sizes are small (KernelDef.loop) so a
+ * rep stays well under a slice even on a slow core under full load.
  */
-/** Warm-up per kernel before an Endurance loop starts (11 CPU kernels: ~1.7 s of the 3 s start delay). */
+/** Warm-up per kernel before an Endurance loop starts. */
 const LOOP_WARM_MS = 150;
+/** The whole warm-up never takes longer than this (the page's start delay is 3 s). */
+const LOOP_WARM_BUDGET_MS = 1_500;
 
 function loop(m: KernelModule, req: LoopRequest): void {
-  const { control, out, kernels, windowMs, windows, start } = req;
+  const { control, out, best, kernels, windowMs, windows, start } = req;
   const nk = kernels.length;
   const fns = kernels.map((k) => m.kernel(k.kernel));
   const slice = windowMs / nk;
+  const stopped = () => Atomics.load(control, LOOP.STOP) !== 0;
   // Warm-up before window 0 (inside the page's start delay): without it the
-  // first window runs on baseline-tier code at about half speed and would be
-  // a wrong 100 %. Also checks every kernel's checksum once up front.
+  // first window runs on baseline-tier code at about half speed. Also checks
+  // every kernel's checksum once up front. Each kernel gets an equal share of
+  // what is left of the budget, at most LOOP_WARM_MS, and at least one rep.
+  const warmEnd = performance.now() + LOOP_WARM_BUDGET_MS;
   for (let k = 0; k < nk; k++) {
     const def = kernels[k]!;
     prepareStatus(fns[k]!.prepare(def.seed, def.size));
-    const until = performance.now() + LOOP_WARM_MS;
+    const t = performance.now();
+    const until = t + Math.min(LOOP_WARM_MS, (warmEnd - t) / (nk - k));
     do {
       if (fns[k]!.run() >>> 0 !== def.expected >>> 0) throw new Error(`checksum mismatch in ${def.kernel}: result invalid`);
-    } while (performance.now() < until && Atomics.load(control, LOOP.STOP) === 0);
+    } while (performance.now() < until && !stopped());
   }
   while (now() < start) {
-    if (Atomics.load(control, LOOP.STOP) !== 0) return;
+    if (stopped()) return;
   }
+  let missed = 0;
   let w = 0;
   while (w < windows) {
     const ws = start + w * windowMs;
     for (let k = 0; k < nk; k++) {
       const end = ws + (k + 1) * slice;
-      if (now() >= end) continue; // reached late: this slice stays NaN
+      if (now() >= end + slice) {
+        // A real stall: this slice stays NaN.
+        Atomics.store(control, LOOP.MISSED, ++missed);
+        continue;
+      }
       const def = kernels[k]!;
       prepareStatus(fns[k]!.prepare(def.seed, def.size));
       const run = fns[k]!.run;
       const expected = def.expected >>> 0;
       let reps = 0;
       let bad = false;
+      let fastest = Infinity;
+      let last: number;
       const t0 = now();
-      let t1: number;
+      let t1 = t0;
       do {
         if (run() >>> 0 !== expected) bad = true;
+        const t = now();
+        last = t - t1;
+        if (last < fastest) fastest = last;
+        t1 = t;
         reps++;
-        t1 = now();
-      } while (t1 < end && !bad && Atomics.load(control, LOOP.STOP) === 0);
+      } while (t1 + last / 2 < end && !bad && !stopped());
       if (bad) throw new Error(`checksum mismatch in ${def.kernel}: result invalid`);
-      out[w * nk + k] = reps / (t1 - t0);
-      if (Atomics.load(control, LOOP.STOP) !== 0) return;
+      const mean = reps / (t1 - t0);
+      out[w * nk + k] = mean;
+      // A rep under the timer's resolution reads as 0 ms (smoke sizes): use the mean then.
+      best[w * nk + k] = fastest > 0 ? Math.max(1 / fastest, mean) : mean;
+      if (stopped()) return; // a window cut short by Stop is not counted
     }
     Atomics.store(control, LOOP.DONE, w + 1);
     // Skip windows that are already over (e.g. after a long pause).
-    w = Math.max(w + 1, Math.floor((now() - start) / windowMs));
+    const next = Math.max(w + 1, Math.floor((now() - start) / windowMs));
+    if (next > w + 1) {
+      missed += (Math.min(next, windows) - w - 1) * nk;
+      Atomics.store(control, LOOP.MISSED, missed);
+    }
+    w = next;
   }
   Atomics.store(control, LOOP.DONE, windows);
 }

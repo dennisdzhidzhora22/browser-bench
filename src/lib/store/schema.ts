@@ -5,7 +5,7 @@
 // points (lib/scoring/constants.ts). They change independently.
 
 import type { ComponentId, SizeId } from '../bench/types.ts';
-import { dropOf } from '../harness/drop.ts';
+import { figuresOf, WINDOW_MS } from '../harness/drop.ts';
 import type { RunMode } from '../harness/orchestrator.ts';
 import type { SystemInfo } from '../sysinfo/index.ts';
 
@@ -76,10 +76,19 @@ export interface EndurancePart {
   keys: string[];
   units: string[];
   base: (number | null)[];
-  /** Throughput per 5 s window relative to the first valid window; null = invalid (hidden, missed). */
+  /** Throughput per 5 s window relative to the first valid window; null = invalid (hidden, unfocused, missed). */
   values: (number | null)[];
-  /** 1 - mean(last minute) / mean(first minute). Recomputed on load, never trusted. */
+  /**
+   * Sustained drop: 1 - median(last minute) / median(minute 2) (drop.ts).
+   * Recomputed on load, never trusted, like `burst` and `noisy`. Null when the part has an error.
+   */
   drop: number | null;
+  /** Burst to sustained: 1 - median(minute 2) / first valid window. */
+  burst: number | null;
+  /** Minute 2 or the last minute too uneven to trust the figures. */
+  noisy: boolean;
+  /** Slices each worker skipped after a stall (absent in records saved before it existed). */
+  missed?: number[];
   error?: string;
 }
 
@@ -89,6 +98,10 @@ export interface EnduranceRecord {
   windowMs: number;
   /** Window indexes that overlapped a hidden-tab period. */
   hidden: number[];
+  /** Window indexes that overlapped a period with another window in front (absent in older records). */
+  unfocused?: number[];
+  /** What the page said about the run (a part not looped, focus unknown). */
+  notes?: string[];
   parts: EndurancePart[];
 }
 
@@ -234,11 +247,20 @@ const COMPONENT = shape(
 const nonNeg = is((x) => x === null || (finite(x) && (x as number) >= 0));
 const len = (x: unknown) => (x as unknown[]).length;
 
+/** Window indexes: unique, each below `n`. */
+const indexesOk = (xs: unknown, n: number) => {
+  const list = xs as number[];
+  return new Set(list).size === list.length && list.every((i) => i < n);
+};
+
 const ENDURANCE = shape(
   {
     durationMs: count,
-    windowMs: count,
+    // MINUTE (12 windows) and the figures assume 5 s windows.
+    windowMs: oneOf(WINDOW_MS),
     hidden: listOf(whole),
+    unfocused: opt(listOf(whole)),
+    notes: opt(listOf(str)),
     parts: listOf(
       shape(
         {
@@ -250,18 +272,34 @@ const ENDURANCE = shape(
           base: listOf(nonNeg),
           values: listOf(nonNeg),
           drop: opt(numOrNull),
+          burst: opt(numOrNull),
+          noisy: opt(bool),
+          missed: opt(listOf(whole)),
           error: opt(str),
         },
         (p) => {
           if (len(p['units']) !== len(p['keys']) || len(p['base']) !== len(p['keys'])) return false;
           if (len(p['values']) > MAX_WINDOWS) return false;
-          p['drop'] = dropOf(p['values'] as (number | null)[]);
+          if (p['missed'] !== undefined && len(p['missed']) !== p['workers']) return false;
+          Object.assign(p, figuresOf(p['values'] as (number | null)[], p['error'] as string | undefined));
           return true;
         },
       ),
     ),
   },
-  (e) => len(e['hidden']) <= MAX_WINDOWS,
+  (e) => {
+    const windows = Math.ceil((e['durationMs'] as number) / WINDOW_MS);
+    if (windows > MAX_WINDOWS) return false;
+    const parts = e['parts'] as Record<string, unknown>[];
+    // A series never holds more windows than the run had; marked windows are among them.
+    const longest = parts.reduce((a, p) => Math.max(a, len(p['values'])), 0);
+    if (longest > windows) return false;
+    if (!indexesOk(e['hidden'], longest) || (e['unfocused'] !== undefined && !indexesOk(e['unfocused'], longest))) {
+      return false;
+    }
+    if (e['notes'] !== undefined && len(e['notes']) > 20) return false;
+    return unique(parts, (p) => p['id']);
+  },
 );
 
 /** ISO 8601 UTC, as `Date.toISOString()` writes it: these sort as strings. */

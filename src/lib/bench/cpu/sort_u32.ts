@@ -13,5 +13,7 @@ export const sortU32: KernelDef = {
   expected: { smoke: 2_766_581_911, standard: 329_145_997 },
   // All-cores test: smaller size so one instance per core fits in memory.
   multi: { size: 1_000_000, expected: 3_432_757_072 },
+  // Endurance / Stress: a rep of about 5-13 ms on a fast core alone.
+  loop: { size: 150_000, expected: 4_228_455_512 },
   work: (size) => size / 1e6,
 };

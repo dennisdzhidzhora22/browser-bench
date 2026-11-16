@@ -212,12 +212,14 @@ would add about half a second of `requestAnimationFrame` counting before every r
 |---|---|---|
 | Benchmark — Quick | a few minutes at most (1 min was a soft goal; owner OK'd ~70 s for CPU alone, 2026-11-13) | scores |
 | Benchmark — Full | longer than Quick, soft limit | scores, tighter spread |
-| Endurance | 10, 30 or 60 min, user picks | throughput over time, start vs end, drop % |
+| Endurance | 10, 30 or 60 min, user picks | throughput over time, burst → sustained and sustained drop % |
 | Stress | until stopped | same chart, live |
 
 Endurance and Stress loop the selected components' kernels. Throughput is recorded per
-5-second window into a preallocated typed array. The drop over time is the stand-in for the
-temperature reading the browser cannot give: a falling line means thermal throttling.
+5-second window into a preallocated typed array. Browsers cannot read temperatures, so the
+line over time is the stand-in. A fast first few seconds that then settle is the CPU's short
+power boost ending (reported as *burst → sustained*); a slow slide after that usually means
+the PC slows down as it heats up (reported as *sustained drop*).
 
 During Endurance and Stress the page may update at most once per second, and a
 "no live updates" switch disables even that.
@@ -227,6 +229,11 @@ All modes:
 - Request a screen Wake Lock for the run.
 - If the tab becomes hidden, stop measuring and mark the affected samples invalid. Browsers
   throttle hidden tabs, so those numbers are wrong.
+- Keep the window in front. Windows 11 moves the threads of a window that is not in front to
+  efficiency cores (EcoQoS); no Chrome flag turns that off, and the page still counts as
+  visible. Endurance and Stress treat it like a hidden tab (below). Benchmark mode shows a note
+  after a run during which the window lost focus ("some results can be low"); that is the
+  cheap version: the note is not saved and does not say which tests were affected.
 - Cancel is always available and always cleans up workers, GPU resources and OPFS files.
 
 How it works (M7):
@@ -236,56 +243,104 @@ How it works (M7):
   1 worker; CPU all cores: the worker count; Memory: the all-cores copy (`mem_copy_mt`) on the
   worker count; GPU: one GPU worker on the first planned GPU (with "Both", the Fast one).
   **Storage is not looped** (it would wear the drive for no thermal insight); the page says
-  so and keeps M5's guarantees by never creating files in these modes. CPU parts use the
-  `multi` sizes (short runs, under ~16 MB per instance). Selecting CPU all cores and Memory
-  together runs two workers per core: deliberate oversubscription, fine for drop % because
-  each part is compared with its own start.
+  so and keeps M5's guarantees by never creating files in these modes. A selected part that
+  cannot loop (no WebGPU or WebGL2) is named in the run's notes, shown and saved. CPU parts use
+  the `loop` sizes (`KernelDef.loop`): about 5–13 ms per rep on a fast core alone, so a rep
+  stays around 1/5 of a slice (5 s / 11 kernels ≈ 454 ms) or less even on a low-power core
+  with every core loaded (round-1 review: `sort_f64` at its `multi` size took 490–560 ms
+  there, longer than its slice). Smaller sizes fit more in cache; that is fine here, because
+  each part is only compared with itself. Selecting CPU all cores and Memory together runs two
+  workers per core: deliberate oversubscription, fine for these figures because each part is
+  compared with itself.
 - **Loop.** One `loop` message per worker (`protocol.ts`, `LoopRequest`). Windows are 5 s on
-  the shared absolute clock (`timeOrigin + now`), starting 3 s after every worker is ready
-  (CPU workers warm up each kernel for 150 ms, checking its checksum, and GPU workers prepare
-  and calibrate every test in that time; without the warm-up the first window ran at about half
-  speed and made a wrong 100 %). Each window is split into equal
-  slices, one per kernel, so all workers of a part run the same kernel at the same time with
-  no barrier. A CPU slice prepares its kernel (untimed; the arena holds one kernel at a time)
-  and calls `run` until the slice ends, checking every checksum (a mismatch fails the part); a
-  GPU slice submits whole calibrated batches (~200 ms) and its outputs are validated once
-  after the loop, also after Stop. The worker writes `reps / ms` per kernel per window into a
-  preallocated `Float64Array` on a `SharedArrayBuffer` (NaN = not measured) and a finished-
-  window counter; nothing is posted until the loop ends. A worker that reaches a slice or
-  window late (a slow call, a paused tab) leaves it NaN and catches up on the clock.
+  the shared absolute clock (`timeOrigin + now`), starting 3 s after every worker is ready.
+  In that delay CPU workers warm up every kernel, checking its checksum (a 1.5 s budget for
+  all kernels: an equal share of what is left, at most 150 ms each, at least one rep, so the
+  warm-up cannot overrun the delay), and GPU workers prepare and calibrate every test; without
+  a warm-up the first window ran at about half speed. Each window is split into equal slices,
+  one per kernel, so all workers of a part run the same kernel at the same time with no
+  barrier. A CPU slice prepares its kernel (untimed; the arena holds one kernel at a time) and
+  calls `run` until the slice ends, checking every checksum (a mismatch fails the part); a GPU
+  slice submits whole calibrated batches (~200 ms) and its outputs are validated once after
+  the loop, also after Stop. Per kernel per window the worker writes the mean rate
+  (`reps / ms`) and the rate of its **fastest rep** (GPU: fastest batch) into two preallocated
+  `Float64Array`s on `SharedArrayBuffer`s (NaN = not measured) and bumps a finished-window
+  counter; nothing is posted until the loop ends. A slice always runs at least one rep and
+  never starts a rep it expects (from the last rep's length) to end more than half a rep past
+  the slice end. Only a slice reached more than a whole slice late (a real stall: a paused
+  tab, a starved thread) is skipped: it stays NaN and counts in the worker's `LOOP.MISSED`
+  slot. Whole windows that are already over are skipped and counted the same way. Missed
+  slices are shown per part (total, worst worker) and saved per worker. A window cut short by
+  Stop is not counted (CPU and GPU).
 - **Series.** Window w counts once every worker of the part has finished it. A kernel's rate is
-  the sum over workers; the window's value is `geomean over kernels of rate / base`, where the
-  base is each kernel's rate in the first window in which every kernel was measured and the
-  tab was visible (that window = 100 %). The first window's absolute throughput per kernel is
-  shown and saved.
-- **Drop.** `drop = 1 − mean(last n valid windows) / mean(first n valid windows)` with
-  `n = min(12, floor(valid / 2))`: the first and last minute of valid windows, or halves of a
-  shorter run. Fewer than 2 valid windows: no drop. Positive = slower at the end.
+  the sum over workers of each worker's fastest-rep rate; the window's value is
+  `geomean over kernels of rate / base`, where the base is each kernel's rate in the first
+  window in which every kernel was measured and the window was valid. Why the fastest rep: on
+  a hybrid CPU the OS moves a thread between performance, efficiency and low-power cores
+  (about 2× apart), so the mean rate mostly showed which core the thread sat on (round-1
+  review: one uncontended worker swung 0.82 → 1.98 within a minute). The fastest rep shows the
+  speed still reachable, like Benchmark mode's fastest samples. The first valid window's
+  absolute throughput per kernel (its mean rate: the work really done) is shown and saved.
+- **Figures.** For a series of N windows let `m = min(12, floor(N / 3))`, and the groups be
+  *minute 1* = windows [0, m), *minute 2* = [m, 2m) and the *last minute* = [N − m, N). Runs
+  of 3 minutes or more use whole minutes, shorter ones thirds, so the groups never overlap.
+  Over valid windows only:
+  - `burst → sustained = 1 − median(minute 2) / first valid window of minute 1`. Mostly the
+    short power boost running out in the first seconds (round-1 review: all cores went
+    1.00 → ~0.55 by window 2), not heat.
+  - `sustained drop = 1 − median(last minute) / median(minute 2)`. The slow slide that follows
+    heat; saved as `drop`, and the figure History shows.
+  - Null when a group has no valid window, the denominator is 0, or N < 3. Positive = slower.
+  - **noisy** when minute 2 or the last minute has fewer than half its windows valid, or an
+    interquartile range above 10 % of its median.
+  - A part with an error (init, checksum, GPU validation, also one reported after Stop) has no
+    figures.
+  - The chart's 100 % is each part's mean of minute 2 (before minute 2 exists: its first valid
+    window), so the sustained drop reads off the chart and the burst shows above 100 %.
 - **Hidden tab.** Workers keep the load running (so the thermal state carries on), but any
-  window overlapping a hidden period is invalid: excluded from the base and the drop, shown
+  window overlapping a hidden period is invalid: excluded from the base and the figures, shown
   as a grey band on the chart, and its index saved.
+- **Window not in front.** The same for a period without focus (window `blur` / `focus`
+  events, backed up by `document.hasFocus()` once a second): those windows are invalid,
+  hatched on the chart and saved in `unfocused`. Tracking starts only once the window has had
+  focus since the start. A window that never had focus (a run started from a background
+  window; Playwright, which emulates focus, normally reports focus) is "focus unknown":
+  nothing is invalidated, and a note saying so is shown and saved. Chosen over a test flag so
+  automation needs nothing special. The page says "Keep this window in front during the run"
+  under the mode choice and next to the clock.
 - **Page.** At most one update per second (a 1 s interval reads the shared arrays and redraws
-  the chart and the clock); "No live updates" skips even that until the run ends. The engine
+  the chart and the clock); "No live updates" skips even that until the run ends. Windows that
+  ended more than 2 s ago are computed once and cached, the view is `$state.raw` (not
+  proxied), and the chart finds its range with a loop, not `Math.min(...values)`. The engine
   and the chart load lazily, on first use, outside the page-load budget. The chart is a
-  hand-drawn canvas: one line per part, y = % of the start, x = minutes.
+  hand-drawn canvas: one line per part, y = % of minute 2, x = minutes.
 - **Endings.** Endurance ends after 10, 30 or 60 min (test only: `?endurance=30s` or `=1m`).
   Cancel terminates every worker at once (after setting each loop's STOP flag). Stress runs
   until Stop (capped at 12 h, which bounds the preallocated arrays): Stop sets STOP, waits up
   to 3 s for workers to finish their slice and GPU validation, then terminates everything,
-  like Cancel. Stress results are shown, not saved.
+  like Cancel. A worker's own error reply in that time still fails its part; only the
+  terminations are not failures. Stress results are shown, not saved.
 - **Wake Lock** (all modes): `navigator.wakeLock.request('screen')` at the start, requested
-  again when the tab becomes visible (browsers release it when hidden), released at the end or
-  on cancel. Unsupported or refused: the run goes on; Endurance and Stress say the screen may
-  sleep. Benchmark mode shows nothing about it, so a re-acquire never writes to the DOM
-  mid-test.
+  again when the tab becomes visible (browsers release it when hidden; never while a request
+  is still pending), released at the end or on cancel. Unsupported or refused: the run goes on;
+  Endurance and Stress say the screen may sleep. Benchmark mode shows nothing about it, so a
+  re-acquire never writes to the DOM mid-test.
 - **Record.** A finished Endurance run is saved (`mode: "endurance"`, no components, so no
-  points) with an `endurance` block: planned `durationMs`, `windowMs`, hidden window indexes,
-  and per part its id, label, workers, kernel keys and units, first-window throughput (6
-  significant digits) and the window series (4 significant digits, null = invalid). A 60-minute
-  run is about 5 kB per part. Import validates it strictly (equal list lengths, at most 1,000
-  windows, values ≥ 0 or null; `mode: "endurance"` if and only if the block is present) and
-  recomputes every drop from the series: saved drops are never trusted. `schema` stays 1:
-  the block is optional, so older records still load.
+  points, `partial: false`) with an `endurance` block: planned `durationMs`, `windowMs`, hidden
+  and unfocused window indexes, notes, and per part its id, label, workers, kernel keys and
+  units, first-window throughput (6 significant digits), the window series (4 significant
+  digits, null = invalid), missed slices per worker and the figures (`burst`, `drop`,
+  `noisy`). A 60-minute run is about 5 kB per part. Import validates it strictly: `windowMs`
+  = 5000; equal list lengths; values ≥ 0 or null, at most `ceil(durationMs / windowMs)` ≤ 1,000
+  per part; hidden and unfocused indexes unique and below the longest series; `missed` one
+  entry per worker; no duplicate part ids; at most 20 notes; `mode: "endurance"` if and only
+  if the block is present. Every figure is recomputed from the series (none when the part has
+  an error): saved figures are never trusted. `schema` stays 1: the block and its newer fields
+  are optional, so older records still load.
+- **Downgrades wipe history.** A build older than M7 on the same origin (an old tab still
+  open, or a rollback) rejects `mode: "endurance"`, so the whole saved history fails to load
+  there, and the next run that build saves replaces it, erasing every saved run. Old builds
+  cannot be fixed; export the history before going back.
 
 ## 5. Measurement method
 
@@ -369,7 +424,7 @@ How it works (M6):
   points", "not comparable (score vN)"); a run can be opened, exported or deleted, and all
   runs exported or cleared (clear asks once more).
 - **Endurance records (M7):** see section 4. They carry no points and the History list shows
-  their drop per part instead of a total.
+  their sustained drop per part instead of a total.
 - **Export / import.** A file is `{ format: "browser-bench", schema: 1, runs: [...] }`,
   downloaded through a Blob URL (no network). Import checks the format marker, the schema
   version (unknown version: a clear message) and every field's type; any bad run rejects the
