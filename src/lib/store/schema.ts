@@ -5,6 +5,7 @@
 // points (lib/scoring/constants.ts). They change independently.
 
 import type { ComponentId, SizeId } from '../bench/types.ts';
+import { dropOf } from '../harness/drop.ts';
 import type { RunMode } from '../harness/orchestrator.ts';
 import type { SystemInfo } from '../sysinfo/index.ts';
 
@@ -65,12 +66,43 @@ export interface ComponentRecord {
   scaled?: boolean;
 }
 
+/** One Endurance part (component): its window series, rounded (4 significant digits). */
+export interface EndurancePart {
+  id: ComponentId;
+  /** e.g. "CPU — all cores", "GPU (Fast: …)". */
+  label: string;
+  workers: number;
+  /** defKey of each kernel looped, in slice order, with its unit and first-window throughput. */
+  keys: string[];
+  units: string[];
+  base: (number | null)[];
+  /** Throughput per 5 s window relative to the first valid window; null = invalid (hidden, missed). */
+  values: (number | null)[];
+  /** 1 - mean(last minute) / mean(first minute). Recomputed on load, never trusted. */
+  drop: number | null;
+  error?: string;
+}
+
+export interface EnduranceRecord {
+  /** Planned length. */
+  durationMs: number;
+  windowMs: number;
+  /** Window indexes that overlapped a hidden-tab period. */
+  hidden: number[];
+  parts: EndurancePart[];
+}
+
+/** Windows a saved series may hold: 60 min of 5 s windows, with room. */
+export const MAX_WINDOWS = 1_000;
+
 export interface RunRecord {
   schema: number;
   id: string;
   /** ISO 8601, UTC. */
   time: string;
-  mode: RunMode;
+  /** Endurance runs have no components (no points) and an `endurance` block. */
+  mode: RunMode | 'endurance';
+  endurance?: EnduranceRecord;
   size: SizeId;
   scoreVersion: number;
   system: SystemInfo;
@@ -144,6 +176,8 @@ const shape =
     return ok(out) ? out : BAD;
   };
 
+const COMPONENT_ID = oneOf('cpu-single', 'cpu-multi', 'memory', 'gpu', 'storage');
+
 const KERNEL = shape(
   {
     key: str,
@@ -176,7 +210,7 @@ const unique = (xs: unknown, key: (x: Record<string, unknown>) => unknown) => {
 
 const COMPONENT = shape(
   {
-  id: oneOf('cpu-single', 'cpu-multi', 'memory', 'gpu', 'storage'),
+  id: COMPONENT_ID,
   kernels: listOf(KERNEL),
   points: numOrNull,
   partial: bool,
@@ -197,6 +231,39 @@ const COMPONENT = shape(
   (c) => unique(c['kernels'], (k) => k['key']),
 );
 
+const nonNeg = is((x) => x === null || (finite(x) && (x as number) >= 0));
+const len = (x: unknown) => (x as unknown[]).length;
+
+const ENDURANCE = shape(
+  {
+    durationMs: count,
+    windowMs: count,
+    hidden: listOf(whole),
+    parts: listOf(
+      shape(
+        {
+          id: COMPONENT_ID,
+          label: str,
+          workers: count,
+          keys: listOf(str),
+          units: listOf(str),
+          base: listOf(nonNeg),
+          values: listOf(nonNeg),
+          drop: opt(numOrNull),
+          error: opt(str),
+        },
+        (p) => {
+          if (len(p['units']) !== len(p['keys']) || len(p['base']) !== len(p['keys'])) return false;
+          if (len(p['values']) > MAX_WINDOWS) return false;
+          p['drop'] = dropOf(p['values'] as (number | null)[]);
+          return true;
+        },
+      ),
+    ),
+  },
+  (e) => len(e['hidden']) <= MAX_WINDOWS,
+);
+
 /** ISO 8601 UTC, as `Date.toISOString()` writes it: these sort as strings. */
 const ISO_UTC = /^\d{4}-\d\d-\d\dT[\d:.]+Z$/;
 
@@ -205,7 +272,8 @@ const RECORD = shape(
   schema: oneOf(SCHEMA),
   id: str,
   time: is((t) => typeof t === 'string' && ISO_UTC.test(t) && !Number.isNaN(Date.parse(t))),
-  mode: oneOf('quick', 'full'),
+  mode: oneOf('quick', 'full', 'endurance'),
+  endurance: opt(ENDURANCE),
   size: oneOf('smoke', 'standard'),
   scoreVersion: count,
   system: shape({
@@ -223,8 +291,11 @@ const RECORD = shape(
   total: numOrNull,
   partial: bool,
   },
-  // One component per id; GPU: one per preference.
+  // One component per id; GPU: one per preference. Endurance: a series block and no components.
   (r) =>
+    (r['mode'] === 'endurance'
+      ? r['endurance'] !== undefined && len(r['components']) === 0
+      : r['endurance'] === undefined) &&
     unique(r['components'], (c) => `${String(c['id'])}:${String((c['gpu'] as Record<string, unknown> | undefined)?.['preference'] ?? '')}`),
 );
 

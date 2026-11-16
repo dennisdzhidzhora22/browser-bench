@@ -170,7 +170,64 @@ export interface Measured {
   checksumConsistent: boolean;
 }
 
-export type ToWorker = InitRequest | RunRequest | PrepareRequest | MeasureRequest;
+// ── Endurance and Stress loops (docs/SPEC.md, 4, "How it works (M7)") ──────
+//
+//   page                        worker
+//   loop {kernels, start, ...} ───▶ for each window w, for each kernel k:
+//                                   prepare (untimed), then run until the
+//                                   slice ends; store the rate in `out`
+//                          ◀───   looped | error  (once, at the end)
+//
+// Windows are on the shared absolute clock (timeOrigin + now): window w is
+// [start + w*windowMs, start + (w+1)*windowMs), split into equal slices, one
+// per kernel, so every worker of a component runs the same kernel at the same
+// time without a barrier. A window the worker reaches late (a slow call, a
+// paused tab) keeps NaN for what it missed. Nothing is posted per window: the
+// page reads `out` and `control` (SharedArrayBuffers) at most once a second.
+
+/** Indexes into a loop's Int32 control array. */
+export const LOOP = {
+  /** Page sets 1 to end the loop early. */
+  STOP: 0,
+  /** Windows this worker has finished (written after each window). */
+  DONE: 1,
+  LENGTH: 4,
+} as const;
+
+export interface LoopKernel {
+  kernel: string;
+  seed: number;
+  size: number;
+  /** CPU: checksum `run` must return. GPU: validated after the loop instead. */
+  expected: number;
+  /** GPU: repeat the test to fill about this many ms per timed batch. */
+  targetMs?: number;
+}
+
+export interface LoopRequest {
+  type: 'loop';
+  id: number;
+  kernels: LoopKernel[];
+  /** Absolute ms (timeOrigin + now) when window 0 starts. */
+  start: number;
+  windowMs: number;
+  windows: number;
+  /** Int32Array over a SharedArrayBuffer, LOOP.LENGTH entries. */
+  control: Int32Array;
+  /**
+   * Float64Array over a SharedArrayBuffer, windows * kernels entries, filled
+   * with NaN by the page: [w * kernels + k] = work units of kernel k per ms
+   * in window w (CPU: reps/ms; GPU: reps/ms, a rep being one test iteration).
+   */
+  out: Float64Array;
+}
+
+export interface Looped {
+  type: 'looped';
+  id: number;
+}
+
+export type ToWorker = InitRequest | RunRequest | PrepareRequest | MeasureRequest | LoopRequest;
 
 export interface Ready {
   type: 'ready';
@@ -207,4 +264,4 @@ export interface WorkerError {
   message: string;
 }
 
-export type FromWorker = Ready | RunResult | Prepared | Measured | WorkerError;
+export type FromWorker = Ready | RunResult | Prepared | Measured | Looped | WorkerError;

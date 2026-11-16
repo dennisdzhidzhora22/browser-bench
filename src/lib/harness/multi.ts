@@ -108,8 +108,8 @@ export function clampWorkers(n: number, max: number): number | undefined {
   return t >= 1 ? Math.min(t, Math.max(1, Math.trunc(max))) : undefined;
 }
 
-/** One worker with one request in flight at a time. */
-class Channel {
+/** One worker with one request in flight at a time (also used by endurance.ts). */
+export class Channel {
   private pending: { resolve(m: FromWorker): void; reject(e: Error): void } | undefined;
   dead: Error | undefined;
 

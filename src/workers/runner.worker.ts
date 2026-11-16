@@ -7,6 +7,8 @@ import {
   CTRL,
   ERROR_GEN,
   groupMsPerRep,
+  LOOP,
+  type LoopRequest,
   SLOT,
   type FromWorker,
   type InitRequest,
@@ -152,6 +154,65 @@ function measureLoop(m: KernelModule, req: MeasureRequest): void {
   reply({ type: 'measured', id: req.id, checksumConsistent: consistent });
 }
 
+/**
+ * Endurance / Stress loop (protocol.ts, LoopRequest). Each slice prepares its
+ * kernel (untimed: the arena holds one kernel at a time), then calls `run`
+ * until the slice ends. Every call's checksum is checked; a mismatch fails
+ * the loop. Only `run`, the checksum compare, the STOP read and timer reads
+ * sit between t0 and t1.
+ */
+/** Warm-up per kernel before an Endurance loop starts (11 CPU kernels: ~1.7 s of the 3 s start delay). */
+const LOOP_WARM_MS = 150;
+
+function loop(m: KernelModule, req: LoopRequest): void {
+  const { control, out, kernels, windowMs, windows, start } = req;
+  const nk = kernels.length;
+  const fns = kernels.map((k) => m.kernel(k.kernel));
+  const slice = windowMs / nk;
+  // Warm-up before window 0 (inside the page's start delay): without it the
+  // first window runs on baseline-tier code at about half speed and would be
+  // a wrong 100 %. Also checks every kernel's checksum once up front.
+  for (let k = 0; k < nk; k++) {
+    const def = kernels[k]!;
+    prepareStatus(fns[k]!.prepare(def.seed, def.size));
+    const until = performance.now() + LOOP_WARM_MS;
+    do {
+      if (fns[k]!.run() >>> 0 !== def.expected >>> 0) throw new Error(`checksum mismatch in ${def.kernel}: result invalid`);
+    } while (performance.now() < until && Atomics.load(control, LOOP.STOP) === 0);
+  }
+  while (now() < start) {
+    if (Atomics.load(control, LOOP.STOP) !== 0) return;
+  }
+  let w = 0;
+  while (w < windows) {
+    const ws = start + w * windowMs;
+    for (let k = 0; k < nk; k++) {
+      const end = ws + (k + 1) * slice;
+      if (now() >= end) continue; // reached late: this slice stays NaN
+      const def = kernels[k]!;
+      prepareStatus(fns[k]!.prepare(def.seed, def.size));
+      const run = fns[k]!.run;
+      const expected = def.expected >>> 0;
+      let reps = 0;
+      let bad = false;
+      const t0 = now();
+      let t1: number;
+      do {
+        if (run() >>> 0 !== expected) bad = true;
+        reps++;
+        t1 = now();
+      } while (t1 < end && !bad && Atomics.load(control, LOOP.STOP) === 0);
+      if (bad) throw new Error(`checksum mismatch in ${def.kernel}: result invalid`);
+      out[w * nk + k] = reps / (t1 - t0);
+      if (Atomics.load(control, LOOP.STOP) !== 0) return;
+    }
+    Atomics.store(control, LOOP.DONE, w + 1);
+    // Skip windows that are already over (e.g. after a long pause).
+    w = Math.max(w + 1, Math.floor((now() - start) / windowMs));
+  }
+  Atomics.store(control, LOOP.DONE, windows);
+}
+
 function reply(msg: FromWorker, transfer: Transferable[] = []): void {
   self.postMessage(msg, transfer);
 }
@@ -236,9 +297,12 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
     }
     if (req.type === 'run') run(mod, req);
     else if (req.type === 'prepare') prepareGroup(mod, req);
-    else measureGroup(mod, req);
+    else if (req.type === 'loop') {
+      loop(mod, req);
+      reply({ type: 'looped', id: req.id });
+    } else measureGroup(mod, req);
   } catch (err) {
-    const kernel = req.type === 'measure' ? undefined : req.kernel;
+    const kernel = req.type === 'measure' || req.type === 'loop' ? undefined : req.kernel;
     reply({ type: 'error', id: req.id, ...(kernel ? { kernel } : {}), message: errorText(err) });
   }
 };

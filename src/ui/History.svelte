@@ -29,7 +29,12 @@
 
   let confirmClear = $state(false);
 
+  const len = (ms: number) => (ms >= 60_000 ? `${ms / 60_000} min` : `${ms / 1000} s`);
+
   function label(r: RunRecord): string {
+    if (r.endurance) {
+      return `drop ${r.endurance.parts.map((p) => (p.drop === null ? '—' : `${(p.drop * 100).toFixed(1)}%`)).join(' / ')}`;
+    }
     if (r.scoreVersion !== SCORE_VERSION) return `not comparable (score v${r.scoreVersion})`;
     if (r.size === 'smoke') return 'smoke: no points';
     return r.total === null ? 'no points' : `${r.total}${r.partial ? ' partial' : ''}`;
@@ -99,7 +104,7 @@
         {#each runs as r (r.id)}
           <tr data-testid="history-item" data-id={r.id}>
             <td>{new Date(r.time).toLocaleString()}</td>
-            <td>{r.mode === 'full' ? 'Full' : 'Quick'}{r.size === 'smoke' ? ' · smoke' : ''}</td>
+            <td>{r.endurance ? `Endurance ${len(r.endurance.durationMs)}` : r.mode === 'full' ? 'Full' : 'Quick'}{r.size === 'smoke' ? ' · smoke' : ''}</td>
             <td>{r.system.browser} {r.system.version}</td>
             <td class="r num" data-testid="history-total">{label(r)}</td>
             <td>

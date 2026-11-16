@@ -5,11 +5,13 @@
 
 import { gpuFactories, isSoftware } from '../lib/bench/gpu/index.ts';
 import type { GpuContext, GpuKernel } from '../lib/bench/gpu/types.ts';
-import type {
-  FromWorker,
-  GpuInit,
-  RunRequest,
-  ToWorker,
+import {
+  LOOP,
+  type FromWorker,
+  type GpuInit,
+  type LoopRequest,
+  type RunRequest,
+  type ToWorker,
 } from '../lib/harness/protocol.ts';
 import { fastestSpread } from '../lib/harness/stats.ts';
 
@@ -75,6 +77,88 @@ async function timeBatch(k: GpuKernel, reps: number): Promise<number> {
   return dt;
 }
 
+/**
+ * Warm-up, then reps per batch so a batch lasts about `target` ms. The first
+ * batch pays lazy pipeline compilation on some drivers, so it is never used
+ * for calibration. A single rep includes the fixed submit/readback latency
+ * and overstates the per-rep cost, so double the batch until it takes at
+ * least a quarter of the target, then scale.
+ */
+async function calibrate(k: GpuKernel, target: number): Promise<{ reps: number; short: boolean }> {
+  await timeBatch(k, 1);
+  let reps = 1;
+  let short = false;
+  if (target > 0) {
+    let probe = 1;
+    let dt = await timeBatch(k, probe);
+    while (dt < target / 4 && probe < MAX_REPS) {
+      probe = Math.min(MAX_REPS, probe * 2);
+      dt = await timeBatch(k, probe);
+    }
+    reps = dt > 0 ? Math.min(MAX_REPS, Math.max(1, Math.round((target * probe) / dt))) : MAX_REPS;
+    short = reps === MAX_REPS && dt * (reps / probe) < target / 2;
+    await timeBatch(k, reps); // warm at the real batch size too
+  }
+  return { reps, short };
+}
+
+/** Absolute ms, the clock loop windows use (protocol.ts). */
+const now = () => performance.timeOrigin + performance.now();
+
+/**
+ * Endurance / Stress loop (protocol.ts, LoopRequest). All tests are prepared
+ * and calibrated before the start; each slice then submits whole batches
+ * until it ends. Outputs are validated once, after the loop (also after Stop).
+ */
+async function loop(c: GpuContext, req: LoopRequest): Promise<void> {
+  const { control, out, windowMs, windows, start } = req;
+  const nk = req.kernels.length;
+  const ks: GpuKernel[] = [];
+  gpuError = undefined;
+  try {
+    const reps: number[] = [];
+    for (const d of req.kernels) {
+      const factory = gpuFactories[d.kernel];
+      if (!factory) throw new Error(`GPU test "${d.kernel}" not found`);
+      const k = factory();
+      ks.push(k);
+      await k.prepare(c, d.seed, d.size);
+      reps.push((await calibrate(k, d.targetMs ?? 0)).reps);
+    }
+    const stopped = () => Atomics.load(control, LOOP.STOP) !== 0;
+    if (now() < start) await new Promise((r) => setTimeout(r, start - now()));
+    const slice = windowMs / nk;
+    let w = 0;
+    while (w < windows && !stopped()) {
+      const ws = start + w * windowMs;
+      for (let k = 0; k < nk && !stopped(); k++) {
+        const end = ws + (k + 1) * slice;
+        if (now() >= end) continue;
+        let n = 0;
+        const t0 = now();
+        let t1: number;
+        do {
+          await timeBatch(ks[k]!, reps[k]!);
+          n += reps[k]!;
+          t1 = now();
+        } while (t1 < end && !stopped());
+        out[w * nk + k] = n / (t1 - t0);
+      }
+      Atomics.store(control, LOOP.DONE, w + 1);
+      w = Math.max(w + 1, Math.floor((now() - start) / windowMs));
+    }
+    if (!stopped()) Atomics.store(control, LOOP.DONE, windows);
+    for (let i = 0; i < nk; i++) {
+      const check = await ks[i]!.validate();
+      if (!check.ok) throw new Error(`${req.kernels[i]!.kernel}: output check failed${check.detail ? `: ${check.detail}` : ''}`);
+    }
+    await c.device?.queue.onSubmittedWorkDone();
+    if (gpuError) throw new Error(gpuError);
+  } finally {
+    for (const k of ks) k.dispose();
+  }
+}
+
 async function run(c: GpuContext, req: RunRequest): Promise<void> {
   const factory = gpuFactories[req.kernel];
   if (!factory) throw new Error(`GPU test "${req.kernel}" not found`);
@@ -85,26 +169,7 @@ async function run(c: GpuContext, req: RunRequest): Promise<void> {
     await k.prepare(c, req.seed, req.size);
     const prepareMs = performance.now() - p0;
 
-    // Warm-up: the first batch pays lazy pipeline compilation on some drivers,
-    // so it is never used for calibration. Then calibrate reps so each sample
-    // lasts about targetMs. A single rep includes the fixed submit/readback
-    // latency and overstates the per-rep cost, so double the batch until it
-    // takes at least a quarter of the target, then scale.
-    await timeBatch(k, 1);
-    const target = req.targetMs ?? 0;
-    let reps = 1;
-    let short = false;
-    if (target > 0) {
-      let probe = 1;
-      let dt = await timeBatch(k, probe);
-      while (dt < target / 4 && probe < MAX_REPS) {
-        probe = Math.min(MAX_REPS, probe * 2);
-        dt = await timeBatch(k, probe);
-      }
-      reps = dt > 0 ? Math.min(MAX_REPS, Math.max(1, Math.round((target * probe) / dt))) : MAX_REPS;
-      short = reps === MAX_REPS && dt * (reps / probe) < target / 2;
-      await timeBatch(k, reps); // warm at the real batch size too
-    }
+    const { reps, short } = await calibrate(k, req.targetMs ?? 0);
 
     const times = new Float64Array(req.maxSamples);
     const scratch = new Float64Array(req.maxSamples);
@@ -152,6 +217,16 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       reply({ type: 'ready', abi: 0, info });
     } catch (err) {
       reply({ type: 'error', message: errorText(err) });
+    }
+    return;
+  }
+  if (req.type === 'loop') {
+    try {
+      if (!ctx) throw new Error('worker not initialised');
+      await loop(ctx, req);
+      reply({ type: 'looped', id: req.id });
+    } catch (err) {
+      reply({ type: 'error', id: req.id, message: errorText(err) });
     }
     return;
   }

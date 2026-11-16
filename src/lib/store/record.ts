@@ -11,7 +11,15 @@ import type { SampleStats } from '../harness/stats.ts';
 import { SCORE_VERSION } from '../scoring/constants.ts';
 import { rescore } from '../scoring/score.ts';
 import type { SystemInfo } from '../sysinfo/index.ts';
-import { SCHEMA, type ComponentRecord, type KernelRecord, type RunRecord } from './schema.ts';
+import { dropOf } from '../harness/drop.ts';
+import {
+  SCHEMA,
+  type ComponentRecord,
+  type EndurancePart,
+  type EnduranceRecord,
+  type KernelRecord,
+  type RunRecord,
+} from './schema.ts';
 
 export interface GpuRun {
   target: GpuTarget;
@@ -136,6 +144,40 @@ export function buildRecord(
     scoreVersion: SCORE_VERSION,
     system: { ...system, ...(gpus.length ? { gpu: gpus } : {}) },
     components: comps,
+    total: null,
+    partial: false,
+  });
+}
+
+/** Four significant digits: window series stay small for 60-minute runs (720 windows per part). */
+const r4n = (x: number | null) => (x === null || !Number.isFinite(x) ? null : Number(x.toPrecision(4)));
+
+/** Builds the record of a finished Endurance run. No components, so no points. */
+export function buildEnduranceRecord(
+  endurance: Omit<EnduranceRecord, 'parts'> & {
+    parts: (Omit<EndurancePart, 'drop' | 'values' | 'base'> & { values: (number | null)[]; base: (number | null)[] })[];
+  },
+  size: SizeId,
+  system: SystemInfo,
+): RunRecord {
+  return rescore({
+    schema: SCHEMA,
+    id: crypto.randomUUID(),
+    time: new Date().toISOString(),
+    mode: 'endurance',
+    endurance: {
+      ...endurance,
+      parts: endurance.parts.map((p) => ({
+        ...p,
+        base: p.base.map((b) => (b === null ? null : r6(b))),
+        values: p.values.map(r4n),
+        drop: dropOf(p.values.map(r4n)),
+      })),
+    },
+    size,
+    scoreVersion: SCORE_VERSION,
+    system,
+    components: [],
     total: null,
     partial: false,
   });

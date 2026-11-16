@@ -48,11 +48,19 @@
   import { HISTORY_CAP, loadHistory, mergeRuns, saveHistory } from '../lib/store/history.ts';
   import type { ComponentRecord, KernelRecord, RunRecord } from '../lib/store/schema.ts';
   import { excluded, refsFor } from '../lib/scoring/score.ts';
+  import { WINDOW_MS } from '../lib/harness/drop.ts';
+  import { holdWakeLock, type WakeState } from '../lib/harness/wakelock.ts';
+  import { buildEnduranceRecord } from '../lib/store/record.ts';
+  import type { EnduranceRecord } from '../lib/store/schema.ts';
 
   const isolated = globalThis.crossOriginIsolated === true;
   const dev = import.meta.env.DEV;
   // `?smoke` selects the tiny sizes used by automated tests (docs/SPEC.md, section 3).
-  const size: SizeId = new URLSearchParams(location.search).has('smoke') ? 'smoke' : 'standard';
+  const params = new URLSearchParams(location.search);
+  const size: SizeId = params.has('smoke') ? 'smoke' : 'standard';
+  // Test only: `?endurance=1m` or `?endurance=30s` replaces the 10/30/60-minute choice.
+  const testLen = /^(\d+)(s|m)$/.exec(params.get('endurance') ?? '');
+  const testMs = testLen ? Number(testLen[1]) * (testLen[2] === 'm' ? 60_000 : 1_000) : undefined;
 
   let selected: Record<ComponentId, boolean> = $state({
     'cpu-single': true,
@@ -61,7 +69,16 @@
     gpu: false,
     storage: false,
   });
-  let mode: RunMode = $state('quick');
+  let mode = $state<RunMode | 'endurance' | 'stress'>('quick');
+  let minutes = $state(10);
+  const looping = $derived(mode === 'endurance' || mode === 'stress');
+  /** "No live updates": the page does not touch the DOM until the run ends. */
+  let noLive = $state(false);
+  let wake: WakeState | undefined = $state();
+  /** Endurance / Stress chart: live, or the one just finished (Stress, cancelled). */
+  let loopView: { rec: EnduranceRecord; windows: number; stress: boolean } | undefined = $state();
+  let elapsed = $state('');
+  let stopLoop: (() => Promise<void>) | undefined = $state();
   const cores = Math.max(1, navigator.hardwareConcurrency || 1);
   const maxWorkers = cores * MAX_WORKERS_PER_CORE;
   let workers: number = $state(cores);
@@ -134,6 +151,7 @@
 
   /** Shows a saved run: its record drives the tables and the GPU and storage headers. */
   function open(r: RunRecord) {
+    loopView = undefined;
     outcomes = [];
     multiOutcomes = [];
     memOutcomes = [];
@@ -216,8 +234,20 @@
       : id === 'storage' && storagePlan?.ok === false
         ? 0
         : all.length + multiKernels(id).length;
-  const toRun = $derived(components.filter((c) => selected[c.id] && c.kernels.length > 0));
+  const toRun = $derived(
+    components.filter((c) => selected[c.id] && c.kernels.length > 0 && !(looping && c.id === 'storage')),
+  );
   const anySelected = $derived(toRun.length > 0);
+  /** The Endurance results view, loaded on first use (SPEC 7 budget). */
+  let LoopResults: typeof import('./EnduranceResults.svelte').default | undefined = $state();
+  $effect(() => {
+    if (shownLoop && !LoopResults) void import('./EnduranceResults.svelte').then((m) => (LoopResults = m.default));
+  });
+  const shownLoop = $derived(
+    view?.endurance
+      ? { rec: view.endurance, windows: Math.ceil(view.endurance.durationMs / view.endurance.windowMs), stress: false }
+      : loopView,
+  );
   const needsWorkers = $derived(selected['cpu-multi'] || selected.memory);
 
   /** Lets Svelte flush and the browser paint before the next kernel starts. */
@@ -240,6 +270,21 @@
   }
 
   async function run() {
+    // Wake Lock for every mode. Benchmark mode does not show its state: a
+    // re-acquire after the tab returns must not write to the DOM mid-test.
+    const loop = looping;
+    const release = holdWakeLock((s) => {
+      if (loop) wake = s;
+    });
+    try {
+      await (loop ? runLoop(mode === 'stress') : runBenchmark(mode as RunMode));
+    } finally {
+      release();
+      wake = undefined;
+    }
+  }
+
+  async function runBenchmark(mode: RunMode) {
     const chosen = toRun;
     if (chosen.length === 0) return;
     pendingImport = undefined; // history changes during a run; the user can import again after
@@ -255,6 +300,7 @@
     storageCleanup = undefined;
     view = undefined;
     viewSaved = false;
+    loopView = undefined;
     cancelRequested = false;
     phase = { kind: 'running', index: 0, total: 0, current: 'starting' };
     // Before any measurement: finish the load-time sweep (and re-sweep when
@@ -402,6 +448,92 @@
     }
   }
 
+  /**
+   * Endurance / Stress (SPEC 4, "How it works (M7)"). Every part runs at the
+   * same time on its own workers; the page reads their shared arrays at most
+   * once a second (never with "no live updates") and once at the end.
+   */
+  async function runLoop(stress: boolean) {
+    const chosen = toRun;
+    if (chosen.length === 0) return;
+    pendingImport = undefined;
+    view = undefined;
+    viewSaved = false;
+    loopView = undefined;
+    outcomes = [];
+    multiOutcomes = [];
+    memOutcomes = [];
+    memMulti = [];
+    gpuRuns = [];
+    gpuPlan = undefined;
+    storagePlan = undefined;
+    storageOutcomes = [];
+    cancelRequested = false;
+    elapsed = '';
+    phase = { kind: 'running', index: 0, total: 1, current: 'starting' };
+    // Loaded on first use: keeps Endurance and Stress out of the page-load budget (SPEC 7).
+    const E = await import('../lib/harness/endurance.ts');
+    const { parts, notes } = await E.planParts(chosen, size, workerCount ?? 1, gpuChoice);
+    if (cancelRequested || parts.length === 0) {
+      phase = cancelRequested ? { kind: 'cancelled' } : { kind: 'error', message: notes.join(' ') || 'nothing to run' };
+      return;
+    }
+    const system = await collectSystemInfo();
+    if (cancelRequested) {
+      phase = { kind: 'cancelled' };
+      return;
+    }
+    const ms = stress ? E.STRESS_MAX_MS : (testMs ?? minutes * 60_000);
+    const windows = Math.ceil(ms / WINDOW_MS);
+    const l = E.startLoops({ parts, windows });
+    active = l;
+    let stopped = false;
+    stopLoop = async () => {
+      stopped = true;
+      stopLoop = undefined;
+      phase = { kind: 'running', index: 0, total: 1, current: 'Stopping' };
+      await l.stop();
+    };
+    const show = () => {
+      const rec = E.snapshot(l, ms);
+      const done = Math.max(0, ...rec.parts.map((p) => p.values.length));
+      loopView = { rec, windows: stress ? Math.max(done, 12) : windows, stress };
+    };
+    const t0 = performance.now();
+    phase = { kind: 'running', index: 0, total: 1, current: stress ? 'Stress' : 'Endurance' };
+    // At most one page update per second (SPEC 4); none with "no live updates".
+    const timer = setInterval(() => {
+      if (noLive) return;
+      elapsed = E.clock(performance.now() - t0) + (stress ? '' : ` / ${E.clock(ms)}`);
+      show();
+    }, 1_000);
+    try {
+      await l.done;
+    } catch (err) {
+      if (!(err instanceof Cancelled)) phase = { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearInterval(timer);
+      active = undefined;
+      stopLoop = undefined;
+    }
+    show();
+    if (cancelRequested) {
+      phase = { kind: 'cancelled' };
+      return;
+    }
+    if (phase.kind === 'error') return;
+    phase = { kind: 'done' };
+    if (stress || stopped) return; // Stress runs are shown, not saved
+    try {
+      view = buildEnduranceRecord(loopView!.rec, size, system);
+      viewSaved = false;
+      loopView = undefined;
+      setHistory(mergeRuns(history, [view]).runs);
+    } catch (err) {
+      historyMessage = `This run could not be saved: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   function cancel() {
     cancelRequested = true;
     active?.cancel();
@@ -488,10 +620,37 @@
     <legend>Mode</legend>
     <label><input type="radio" bind:group={mode} value="quick" data-testid="mode-quick" /> Quick</label>
     <label><input type="radio" bind:group={mode} value="full" data-testid="mode-full" /> Full</label>
+    <label>
+      <input type="radio" bind:group={mode} value="endurance" data-testid="mode-endurance" /> Endurance
+      {#if testMs}
+        <span class="muted">(test length: {testMs / 1000} s)</span>
+      {:else}
+        <select bind:value={minutes} data-testid="endurance-minutes">
+          <option value={10}>10 min</option><option value={30}>30 min</option><option value={60}>60 min</option>
+        </select>
+      {/if}
+    </label>
+    <label><input type="radio" bind:group={mode} value="stress" data-testid="mode-stress" /> Stress (until stopped)</label>
+    {#if looping}
+      <p class="muted">
+        Loops the selected parts at the same time and shows throughput over time. Memory runs its
+        all-cores copy; storage is not looped (it would wear the drive).
+      </p>
+    {/if}
   </fieldset>
 
   <p>
-    {#if phase.kind === 'running'}
+    {#if phase.kind === 'running' && looping}
+      {#if mode === 'stress'}
+        <button onclick={() => stopLoop?.()} disabled={!stopLoop} data-testid="stop">Stop</button>
+      {:else}
+        <button onclick={cancel} data-testid="cancel">Cancel</button>
+      {/if}
+      <span data-testid="progress">{phase.current}{elapsed ? ` · ${elapsed}` : ''}</span>
+      <span class="muted" data-testid="wake">
+        {wake === 'on' ? 'screen kept on' : wake ? 'the screen may sleep (no wake lock)' : ''}
+      </span>
+    {:else if phase.kind === 'running'}
       <button onclick={cancel} data-testid="cancel">Cancel</button>
       <span data-testid="progress">
         {phase.index + 1} / {phase.total} · {phase.current}
@@ -509,7 +668,18 @@
     <p class="error" data-testid="error">{phase.message}</p>
   {/if}
 
-  {#if view}
+  {#if looping || shownLoop}
+    <label class="workers"><input type="checkbox" bind:checked={noLive} data-testid="no-live" /> No live updates</label>
+  {/if}
+
+  {#if shownLoop}
+    <h2>{shownLoop.stress ? 'Stress' : 'Endurance'}</h2>
+    {#if LoopResults}
+      <LoopResults run={shownLoop.rec} windows={shownLoop.windows} stress={shownLoop.stress} />
+    {/if}
+  {/if}
+
+  {#if view && !view.endurance}
     <Points run={view} saved={viewSaved} />
   {/if}
 
