@@ -109,18 +109,22 @@ export function startLoops(o: {
   };
   doc?.addEventListener('visibilitychange', onVis);
   if (doc?.hidden) onVis();
-  let focusSeen = doc?.hasFocus?.() === true;
+  // Focus is known whenever the page can ask (document.hasFocus). A window
+  // that is already in the background when the loops start (the user clicked
+  // Run, then switched away) is unfocused from the start: that is exactly the
+  // case Windows slows down (EcoQoS). "Unknown" is only for pages without hasFocus.
+  const focusSeen = typeof doc?.hasFocus === 'function';
   const onBlur = () => {
     const last = unfocused[unfocused.length - 1];
     if (focusSeen && !(last && last[1] === Infinity)) unfocused.push([absNow(), Infinity]);
   };
   const onFocus = () => {
-    focusSeen = true;
     const last = unfocused[unfocused.length - 1];
     if (last && last[1] === Infinity) last[1] = absNow();
   };
   win?.addEventListener('blur', onBlur);
   win?.addEventListener('focus', onFocus);
+  if (focusSeen && !doc!.hasFocus()) onBlur();
 
   const killAll = () => {
     // STOP first: a worker deep in its loop exits at its next check even if
@@ -409,7 +413,7 @@ export async function planParts(
 
 /** Saved with the run when focus could not be tracked. */
 export const FOCUS_UNKNOWN_NOTE =
-  'Window focus unknown: the window never had focus during the run, so periods with another window in front could not be marked.';
+  'Window focus unknown: this browser cannot report window focus, so periods with another window in front could not be marked.';
 
 /**
  * What the chart and the saved record show, read from the shared arrays now.

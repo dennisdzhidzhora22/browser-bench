@@ -260,7 +260,7 @@ const ENDURANCE = shape(
     windowMs: oneOf(WINDOW_MS),
     hidden: listOf(whole),
     unfocused: opt(listOf(whole)),
-    notes: opt(listOf(str)),
+    notes: opt(listOf(is((x) => typeof x === 'string' && x.length <= 500))),
     parts: listOf(
       shape(
         {

@@ -137,8 +137,8 @@ describe('burstOf: 1 - median(minute 2) / first valid window of minute 1', () =>
     expect(burstOf([1, 0.8, 0.6])).toBeCloseTo(0.2, 12);
   });
 
-  it('skips invalid windows at the start: the first VALID window of minute 1 is the reference', () => {
-    expect(burstOf([null, 0.8, 0.5, 0.5, 0.5, 0.5])).toBeCloseTo(1 - 0.5 / 0.8, 12);
+  it('is null when window 0 is invalid (a later window has already lost part of the boost)', () => {
+    expect(burstOf([null, 0.8, 0.5, 0.5, 0.5, 0.5])).toBeNull();
   });
 
   it('is negative when minute 2 is faster than the first window', () => {

@@ -731,30 +731,24 @@ test.describe('M7 window focus: Endurance', () => {
     await expect(page.getByTestId('endurance-unfocused-note')).toBeVisible();
   });
 
-  test('focus unknown (the window never had focus): nothing is invalidated, a note says so, shown and saved', async ({ page }) => {
+  test('in the background from the start (Run, then a switch away): every window is invalid, no "unknown" note', async ({ page }) => {
     test.setTimeout(150_000);
     await page.addInitScript(fakeFocus(false), false);
     await start(page);
     await running(page);
-    await clockAt(page, /Endurance · 0:0[5-9] \/ 0:30/);
-    await setFocus(page, false); // a blur from a window that never had focus is not a loss
-    await page.waitForTimeout(6_000);
 
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 90_000 });
     await expect(page.getByTestId('error')).toHaveCount(0);
-    await expect(page.getByTestId('endurance-unfocused-note')).toHaveCount(0);
-    await expect(page.getByTestId('endurance-notes')).toContainText('Window focus unknown');
+    await expect(page.getByTestId('endurance-unfocused-note')).toBeVisible();
     const rec = (await stored(page)).runs[0]!;
-    expect(rec.endurance.unfocused).toEqual([]);
+    const unfocused = rec.endurance.unfocused ?? [];
+    for (const part of rec.endurance.parts) {
+      expect(part.values.every((v) => v === null), `${part.id}: all windows unfocused`).toBe(true);
+      expect(unfocused.length).toBe(part.values.length);
+      expect(part.drop).toBeNull();
+    }
     expect(rec.endurance.hidden).toEqual([]);
-    expect(rec.endurance.notes).toHaveLength(1);
-    expect(rec.endurance.notes![0]).toMatch(/focus unknown/i);
-    expect(rec.endurance.parts[0]!.values.find((v) => v !== null)).toBe(1);
-
-    // The note is part of the saved run.
-    await page.reload();
-    await page.getByTestId('history-open').click();
-    await expect(page.getByTestId('endurance-notes')).toContainText('Window focus unknown');
+    expect((rec.endurance.notes ?? []).filter((n) => /focus unknown/i.test(n))).toEqual([]);
   });
 
   test('focus that arrives mid-run starts the tracking: a later loss counts, the earlier unknown time does not', async ({ page }) => {

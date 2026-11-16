@@ -614,37 +614,29 @@ describe('focus tracking in startLoops', () => {
     l.cancel();
   });
 
-  it('focus unknown: a window that never had focus invalidates nothing, blur events and polling included', () => {
+  it('in the background at the start (Run, then a quick switch away): unfocused from the start, focus known', () => {
+    const t0 = absNow();
     const f = fakeFocus({ focused: false });
     const { l } = trackerRun();
-    expect(l.focusKnown()).toBe(false);
-    f.set(false);
-    l.checkFocus();
-    l.checkFocus();
-    expect(l.unfocused).toEqual([]);
-    expect(l.focusKnown()).toBe(false);
-    l.cancel();
-  });
-
-  it('focus unknown turns known at the first focus (event or poll); only the periods after it count', () => {
-    const f = fakeFocus({ focused: false });
-    const { l } = trackerRun();
-    f.set(false);
-    expect(l.unfocused).toEqual([]);
-    f.set(true);
     expect(l.focusKnown()).toBe(true);
-    f.set(false);
     expect(l.unfocused).toHaveLength(1);
+    expect(l.unfocused[0]![0]).toBeGreaterThanOrEqual(t0);
+    expect(l.unfocused[0]![1]).toBe(Infinity);
+    f.set(false); // more blurs and polls do not stack periods
+    l.checkFocus();
+    expect(l.unfocused).toHaveLength(1);
+    f.set(true); // coming back closes it
+    expect(Number.isFinite(l.unfocused[0]![1])).toBe(true);
+    f.set(false); // a later loss is a second period
+    expect(l.unfocused).toHaveLength(2);
     l.cancel();
-    // by polling alone
+    // the return found by polling alone
     const g = fakeFocus({ focused: false });
     const r2 = trackerRun();
+    expect(r2.l.unfocused).toHaveLength(1);
     g.state.focused = true;
     r2.l.checkFocus();
-    expect(r2.l.focusKnown()).toBe(true);
-    g.state.focused = false;
-    r2.l.checkFocus();
-    expect(r2.l.unfocused).toHaveLength(1);
+    expect(Number.isFinite(r2.l.unfocused[0]![1])).toBe(true);
     r2.l.cancel();
   });
 

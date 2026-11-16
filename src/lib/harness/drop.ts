@@ -66,12 +66,14 @@ export function dropOf(values: readonly (number | null)[]): number | null {
 /**
  * Burst to sustained: 1 - median(minute 2) / the first valid window of
  * minute 1. Mostly the CPU's short power boost running out in the first
- * seconds, not heat. Null as for dropOf.
+ * seconds, not heat. Null as for dropOf, and null when window 0 is invalid
+ * (hidden or unfocused at the start): a later window has already lost part
+ * of the boost, so the figure would read too small.
  */
 export function burstOf(values: readonly (number | null)[]): number | null {
   const g = groupsOf(values.length);
-  if (!g) return null;
-  return fall(validIn(values, g.first)[0], median(validIn(values, g.sustained)));
+  if (!g || values[0] === null || values[0] === undefined) return null;
+  return fall(values[0], median(validIn(values, g.sustained)));
 }
 
 /**

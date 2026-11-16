@@ -204,6 +204,7 @@ function loop(m: KernelModule, req: LoopRequest): void {
       if (now() >= end + slice) {
         // A real stall: this slice stays NaN.
         Atomics.store(control, LOOP.MISSED, ++missed);
+        if (stopped()) return;
         continue;
       }
       const def = kernels[k]!;

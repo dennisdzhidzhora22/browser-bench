@@ -302,12 +302,15 @@ How it works (M7):
   as a grey band on the chart, and its index saved.
 - **Window not in front.** The same for a period without focus (window `blur` / `focus`
   events, backed up by `document.hasFocus()` once a second): those windows are invalid,
-  hatched on the chart and saved in `unfocused`. Tracking starts only once the window has had
-  focus since the start. A window that never had focus (a run started from a background
-  window; Playwright, which emulates focus, normally reports focus) is "focus unknown":
-  nothing is invalidated, and a note saying so is shown and saved. Chosen over a test flag so
-  automation needs nothing special. The page says "Keep this window in front during the run"
-  under the mode choice and next to the clock.
+  hatched on the chart and saved in `unfocused`. Owner-confirmed cause (2026-11-15): Windows 11
+  moves an unfocused window's threads to efficiency cores (EcoQoS), and the line drops until
+  the window is back in front. A window already in the background when the loops start (Run,
+  then a quick switch away) is unfocused from the start (round-2 review). Only a browser
+  without `document.hasFocus` gives "focus unknown" (note saved, nothing invalidated).
+  Playwright emulates focus, so automation needs nothing special. Clicking the address bar,
+  DevTools or a browser dialog also counts as unfocused: conservative (windows dropped, never
+  biased). The burst figure is null when window 0 is invalid. The page says "Keep this window
+  in front during the run" under the mode choice and next to the clock.
 - **Page.** At most one update per second (a 1 s interval reads the shared arrays and redraws
   the chart and the clock); "No live updates" skips even that until the run ends. Windows that
   ended more than 2 s ago are computed once and cached, the view is `$state.raw` (not

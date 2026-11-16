@@ -122,7 +122,7 @@
 <canvas bind:this={canvas} style="display:block;width:100%;height:220px" data-testid="endurance-chart"></canvas>
 <p class="muted">
   {#each parts as p, k (k)}<span style:color={COLORS[k % COLORS.length]}>■</span> {p.label} &nbsp;{/each}
-  · 100% = minute 2
+  · 100% = minute 2 (middle third under 3 min)
   {#if hidden.length}<span data-testid="endurance-hidden-note">· grey: tab hidden, not measured</span>{/if}
   {#if unfocused.length}<span data-testid="endurance-unfocused-note">· hatched: another window in front, not measured</span>{/if}
 </p>
