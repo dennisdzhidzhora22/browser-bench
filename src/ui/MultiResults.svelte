@@ -40,4 +40,5 @@
   {refs}
   refAt={2}
   ref={(r, k) => fmt(r.results[`cpu-multi/${k.key}`])}
+  refv={(r, k) => r.results[`cpu-multi/${k.key}`]}
 />

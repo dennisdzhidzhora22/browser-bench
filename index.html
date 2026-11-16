@@ -6,6 +6,17 @@
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="data:," />
     <title>browser-bench</title>
+    <!-- Skin and light/dark before first paint (no flash); src/ui/look.svelte.ts changes them later. -->
+    <script>
+      (function (d, s, t) {
+        try {
+          s = localStorage.getItem('browser-bench:skin');
+          t = localStorage.getItem('browser-bench:theme');
+        } catch (e) {}
+        d.dataset.skin = /^(clean|terminal|vivid|minimal)$/.test(s) ? s : 'minimal';
+        d.dataset.theme = t == 'light' || t == 'dark' ? t : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      })(document.documentElement);
+    </script>
   </head>
   <body>
     <div id="app"></div>

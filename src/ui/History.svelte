@@ -13,6 +13,7 @@
     onimport,
     pending,
     onconfirm,
+    idx,
   }: {
     runs: RunRecord[];
     /** Last problem or result to report (save failed, import result, ...). */
@@ -25,6 +26,8 @@
     /** An import waiting for a yes/no, with the question to ask. */
     pending?: string;
     onconfirm: (yes: boolean) => void;
+    /** Section number in layout D. */
+    idx: string;
   } = $props();
 
   let confirmClear = $state(false);
@@ -58,8 +61,12 @@
   }
 </script>
 
-<section data-testid="history">
-  <h2>History</h2>
+<section class="sec" id="history" data-testid="history">
+  <div class="sh">
+    <span class="idx">{idx}</span>
+    <h2>Recent runs</h2>
+    <span class="aside">{runs.length} saved · newest first</span>
+  </div>
   {#if message}<p class="warn" data-testid="history-message">{message}</p>{/if}
   {#if pending}
     <p class="warn" data-testid="history-confirm">
@@ -68,7 +75,7 @@
       <button onclick={() => onconfirm(false)} {disabled} data-testid="history-confirm-no">Cancel</button>
     </p>
   {/if}
-  <p>
+  <p class="tools">
     <label class="button">
       Import…
       <input
@@ -96,7 +103,7 @@
   {#if runs.length === 0}
     <p class="muted" data-testid="history-empty">No saved runs yet.</p>
   {:else}
-    <table>
+    <table class="hist">
       <thead>
         <tr><th>Date</th><th>Mode</th><th>Browser</th><th class="r">Total</th><th></th></tr>
       </thead>
@@ -105,7 +112,7 @@
           <tr data-testid="history-item" data-id={r.id}>
             <td>{new Date(r.time).toLocaleString()}</td>
             <td>{r.endurance ? `Endurance ${len(r.endurance.durationMs)}` : r.mode === 'full' ? 'Full' : 'Quick'}{r.size === 'smoke' ? ' · smoke' : ''}</td>
-            <td>{r.system.browser} {r.system.version}</td>
+            <td class="muted">{r.system.browser} {r.system.version}</td>
             <td class="r num" data-testid="history-total">{label(r)}</td>
             <td>
               <button onclick={() => onopen(r)} {disabled} data-testid="history-open">Open</button>
@@ -123,13 +130,6 @@
 </section>
 
 <style>
-  .button {
-    display: inline-block;
-    border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
-    border-radius: 3px;
-    padding: 0.1rem 0.5rem;
-    cursor: pointer;
-  }
   .button input {
     display: none;
   }

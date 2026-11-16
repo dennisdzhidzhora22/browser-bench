@@ -419,6 +419,22 @@ How it works (M6):
 - **References.** `lib/scoring/references.json`: `[{ name, scoreVersion, results: { "<component>/<defKey>": value }, points: { "<component>": n, total: n } }]`.
   Empty until M8. The results tables show one extra column per entry whose `scoreVersion`
   matches this build's; with none, the column is hidden. Excluded components get no column.
+- **Capturing a reference (M8).** `node scripts/make-reference.mjs <export.json> [<run id> | latest] [--name "Owner PC"] [--freeze]`
+  reads an exported history file and takes the given run, or by default the newest Full
+  standard-size Benchmark run. It refuses smoke runs, non-Full runs, Endurance runs, another
+  `scoreVersion`, a component that is missing, partial, without points or with a note
+  (fallback GPU, scaled storage file, worker count not the core count), a missing kernel, and any
+  kernel that is invalid, hidden or failed its output check. It writes (or replaces, by name)
+  that entry in `references.json`: name (default "Owner PC"), `scoreVersion`, every result of the
+  counted components by `<component>/<defKey>`, and points recomputed by `lib/scoring/score.ts`
+  (loaded through Vite, as the unit tests do). With `--freeze` it first rewrites every constant
+  in `constants.ts` from that run (3 significant digits), keeps `SCORE_VERSION = 1` (nothing was
+  frozen before) and replaces the "provisional" comment with where the numbers came from; the
+  reference points are then computed against the new constants (about 1000 each). If anything
+  after the rewrite fails, `constants.ts` is restored, so the two files never disagree. It prints
+  what it did. The Benchmark "window lost focus" note is not saved (section 4), so the script
+  cannot check it: the owner exports a run during which the window stayed in front. `--freeze` is
+  the owner's step; agents do not run it.
 - **History.** `lib/store/history.ts` keeps up to 50 runs in `localStorage` under
   `browser-bench:history` (the export format, compact), newest first. Smoke runs are saved
   and marked. Saving happens after the last measurement. A full quota or blocked storage shows
@@ -577,6 +593,40 @@ the OS unless the user picks one. The choice is saved in localStorage and applie
 paint (no flash). Skins are CSS only (custom properties + small overrides): system fonts, no
 images, no web fonts, no libraries, no animation during a run; switching is disabled during a
 run. Budget: about 7 kB gzip for layout and skins, keeping page load under 50 kB with M7's chart.
+
+How it works (M8):
+
+- **Layout.** `App.svelte` is one page: top bar (brand with score version, anchor links
+  `#setup` / `#history` / `#about`, no router; skin and Light/Dark/Auto selects), system strip
+  (browser, threads, `deviceMemory`, tested GPU, screen, isolation; read once on load, and a run
+  waits for that read so it never paints mid-test), then numbered sections. Numbers count only
+  the sections shown: Setup, Endurance/Stress, Score, one per component, Recent runs, About.
+  Setup holds the component checkboxes with test counts, the mode choice (Endurance with its
+  length), the Run button and a tick per step (drawn between kernels, as before). Each
+  component heading shows "points · tests · all checks passed" (or how many are not valid).
+- **Score.** `Points.svelte` keeps its table (the same rows and cells), laid out by CSS as a big
+  total plus one column per component. With a matching reference, each column shows
+  "vs. <name> <points> · ±x %" (the gap comes from a `data-gap` attribute shown by CSS); without
+  one, nothing vs-ref is drawn. Like for like as before: partial or excluded shows "—".
+- **Tables.** `Table.svelte` adds a thin "vs. ref" bar column after the reference column when a
+  reference exists: a tick in the middle is the reference, the bar grows right when this result
+  is better and left (amber) when worse, half the cell = 2× (log scale); smaller-is-better units
+  (`ns`) are inverted. The test's `stresses` text is the muted line under its name. The Check cell
+  gets a status dot (green ok, amber noisy/hidden, red failed).
+- **Charts.** The memory latency canvas and the Endurance chart read their colours from CSS
+  variables (`--plot`, `--line`, `--muted`, `--bg`, `--s1`…`--s5`) with one `getComputedStyle`
+  per draw, and redraw when the skin or theme changes. The first reference's latency curve is
+  drawn dashed.
+- **Skins.** `app.css` holds layout D and four skins as custom-property sets on
+  `<html data-skin="clean|terminal|vivid|minimal" data-theme="light|dark">` (default Minimal),
+  each with a light and a dark set, plus small overrides (cards for A/B/C, monospace and `> `
+  headings for B, a colour per component and gradients for C). There are no transitions or
+  animations at all, so none can run during a test. `ui/look.svelte.ts` saves the choice in
+  `localStorage` (`browser-bench:skin`, `browser-bench:theme`) and sets the attributes; Auto
+  resolves the OS setting and follows its changes, except during a run (applied after it).
+  A tiny inline script in `index.html` sets both attributes before first paint (no flash); it
+  is inline, so COOP/COEP do not affect it, and the size script counts it with `index.html`.
+- **Budget.** Page load is 46.7 kB gzip (was 40.1 kB before M8).
 
 ## 13. Risks
 

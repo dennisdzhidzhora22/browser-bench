@@ -38,4 +38,5 @@
   {refs}
   refAt={3}
   ref={(r, k) => fmt(r.results[`${prefix}/${k.key}`])}
+  refv={(r, k) => r.results[`${prefix}/${k.key}`]}
 />

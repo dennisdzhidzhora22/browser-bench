@@ -52,8 +52,15 @@
   import { holdWakeLock, type WakeState } from '../lib/harness/wakelock.ts';
   import { buildEnduranceRecord } from '../lib/store/record.ts';
   import type { EnduranceRecord } from '../lib/store/schema.ts';
+  import type { SystemInfo } from '../lib/sysinfo/index.ts';
+  import { SCORE_VERSION } from '../lib/scoring/constants.ts';
+  import { webgpuKernels as gpuTests } from '../lib/bench/gpu/index.ts';
+  import { freezeLook, look, setLook, SKINS, type Skin, type ThemeChoice } from './look.svelte.ts';
 
   const isolated = globalThis.crossOriginIsolated === true;
+  /** The system strip: read once on load; run() waits for it so it never paints mid-test. */
+  let sys: SystemInfo | undefined = $state();
+  const sysReady = collectSystemInfo().then((s) => void (sys = s));
   const dev = import.meta.env.DEV;
   // `?smoke` selects the tiny sizes used by automated tests (docs/SPEC.md, section 3).
   const params = new URLSearchParams(location.search);
@@ -276,6 +283,8 @@
     // Wake Lock for every mode. Benchmark mode does not show its state: a
     // re-acquire after the tab returns must not write to the DOM mid-test.
     const loop = looping;
+    await sysReady;
+    freezeLook(true);
     const release = holdWakeLock((s) => {
       if (loop) wake = s;
     });
@@ -298,8 +307,47 @@
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);
       focusLost = lost;
+      freezeLook(false);
     }
   }
+
+  const running = $derived((phase as Phase).kind === 'running');
+  /** Tests a component adds (the strip in Setup). */
+  const testCount = (id: ComponentId, all: readonly KernelDef[]) =>
+    (id === 'gpu' ? gpuTests.length : all.length) + multiKernels(id).length;
+  const modeName = (m: string) => (m === 'full' ? 'Full' : m === 'endurance' ? 'Endurance' : 'Quick');
+  /** "1085 pts · 11 tests · all checks passed" beside a component's heading. */
+  function summary(ks: KernelRecord[], c?: ComponentRecord): string {
+    const bad = ks.filter((k) => !k.valid).length;
+    return (
+      (c?.points != null ? `${c.points} pts · ` : '') +
+      `${ks.length} test${ks.length === 1 ? '' : 's'} · ` +
+      (bad ? `${bad} not valid` : 'all checks passed')
+    );
+  }
+  /** Layout D numbers the sections that are shown, in page order. */
+  const order = $derived(
+    [
+      'setup',
+      shownLoop && 'loop',
+      view && !view.endurance && 'score',
+      rows.single.length && 'cpu-single',
+      rows.multi.length && 'cpu-multi',
+      rows.memory.length && 'memory',
+      gpuPlan && 'gpu',
+      storagePlan && 'storage',
+      'history',
+      'about',
+    ].filter(Boolean),
+  );
+  const n = (key: string) => String(order.indexOf(key) + 1).padStart(2, '0');
+  const shownSys = $derived(view?.system ?? sys);
+  const gpuNames = $derived(
+    view?.system.gpu?.join(' · ') ||
+      gpuRuns.map((g) => g.target.label).join(' · ') ||
+      (gpuPlan?.api === 'webgl2' ? 'WebGL2' : 'not tested yet'),
+  );
+  const screenText = (s: string) => s.replace(/^(\d+)x(\d+)@(.+)$/, '$1 × $2 @ $3×');
 
   async function runBenchmark(mode: RunMode) {
     const chosen = toRun;
@@ -568,264 +616,328 @@
   <p class="banner" data-testid="dev-banner">Dev build. Scores are not valid.</p>
 {/if}
 
-<h1>browser-bench</h1>
-
-{#if !isolated}
-  <section class="blocked" data-testid="not-isolated">
-    <h2>This page is not cross-origin isolated</h2>
-    <p>
-      Benchmarks need the <code>Cross-Origin-Opener-Policy</code> and
-      <code>Cross-Origin-Embedder-Policy</code> headers. Serve the app with
-      <code>npm run preview</code> or <code>npm run dev</code>, not by opening the file.
-    </p>
-  </section>
-{:else}
-  <p class="muted" data-testid="isolated">Cross-origin isolated: yes{size === 'smoke' ? ' · smoke sizes' : ''}</p>
-
-  <fieldset disabled={phase.kind === 'running'}>
-    <legend>Components</legend>
-    {#each components as c (c.id)}
-      <label class:off={c.kernels.length === 0}>
-        <input
-          type="checkbox"
-          bind:checked={selected[c.id]}
-          disabled={c.kernels.length === 0}
-          data-testid="component-{c.id}"
-        />
-        {c.name}
-        {#if c.kernels.length === 0}<span class="muted">(not built yet)</span>{/if}
-      </label>
-    {/each}
-    {#if needsWorkers}
-      <label class="workers">
-        Workers for all-cores tests
-        <input
-            type="number"
-            min="1"
-            max={maxWorkers}
-            step="1"
-            bind:value={workers}
-            onblur={() => {
-              if (workerCount !== undefined) workers = workerCount;
-            }}
-            data-testid="workers"
-          />
-        <span class="muted">(this browser reports {cores} logical cores)</span>
-      </label>
-    {/if}
-    {#if selected.gpu}
-      <div class="workers" data-testid="gpu-choice">
-        GPU to test:
-        <label class="inline">
-          <input type="radio" bind:group={gpuChoice} value="high-performance" data-testid="gpu-fast" />
-          Fast
-        </label>
-        <label class="inline">
-          <input type="radio" bind:group={gpuChoice} value="low-power" data-testid="gpu-low" />
-          Power-saving
-        </label>
-        <label class="inline">
-          <input type="radio" bind:group={gpuChoice} value="both" data-testid="gpu-both" />
-          Both
-        </label>
-        <span class="muted">
-          (browsers pick the GPU for each; on PCs with two GPUs this is usually the dedicated one
-          and the built-in one)
-        </span>
-      </div>
-    {/if}
-  </fieldset>
-
-  <fieldset disabled={phase.kind === 'running'}>
-    <legend>Mode</legend>
-    <label><input type="radio" bind:group={mode} value="quick" data-testid="mode-quick" /> Quick</label>
-    <label><input type="radio" bind:group={mode} value="full" data-testid="mode-full" /> Full</label>
-    <label>
-      <input type="radio" bind:group={mode} value="endurance" data-testid="mode-endurance" /> Endurance
-      {#if testMs}
-        <span class="muted">(test length: {testMs / 1000} s)</span>
-      {:else}
-        <select bind:value={minutes} data-testid="endurance-minutes">
-          <option value={10}>10 min</option><option value={30}>30 min</option><option value={60}>60 min</option>
-        </select>
-      {/if}
-    </label>
-    <label><input type="radio" bind:group={mode} value="stress" data-testid="mode-stress" /> Stress (until stopped)</label>
-    {#if looping}
-      <p class="muted">
-        Loops the selected parts at the same time and shows throughput over time. Memory runs its
-        all-cores copy; storage is not looped (it would wear the drive).
-        <strong data-testid="focus-hint">Keep this window in front during the run.</strong> On Windows a
-        window in the background runs on the slower cores, so those windows are not counted.
-      </p>
-    {/if}
-  </fieldset>
-
-  <p>
-    {#if phase.kind === 'running' && looping}
-      {#if mode === 'stress'}
-        <button onclick={() => stopLoop?.()} disabled={!stopLoop} data-testid="stop">Stop</button>
-      {:else}
-        <button onclick={cancel} data-testid="cancel">Cancel</button>
-      {/if}
-      <span data-testid="progress">{phase.current}{elapsed ? ` · ${elapsed}` : ''}</span>
-      <span class="muted" data-testid="wake">
-        {wake === 'on' ? 'screen kept on' : wake ? 'the screen may sleep (no wake lock)' : ''}
-      </span>
-      <span class="muted">· keep this window in front</span>
-    {:else if phase.kind === 'running'}
-      <button onclick={cancel} data-testid="cancel">Cancel</button>
-      <span data-testid="progress">
-        {phase.index + 1} / {phase.total} · {phase.current}
-      </span>
-    {:else}
-      <button onclick={run} disabled={!anySelected || (needsWorkers && workerCount === undefined)} data-testid="run"
-        >Run</button
+<div class="wrap">
+  <nav class="top">
+    <h1 class="brand">browser-bench<sup>score v{SCORE_VERSION}</sup></h1>
+    <div class="links"><a href="#setup">Benchmark</a><a href="#history">History</a><a href="#about">About</a></div>
+    <div class="right">
+      <span class="muted">Nothing leaves this browser</span>
+      <!-- Disabled during a run: a skin change restyles the page. -->
+      <select
+        aria-label="Skin"
+        value={look.skin}
+        disabled={running}
+        onchange={(e) => setLook(e.currentTarget.value as Skin, look.theme)}
+        data-testid="skin"
       >
-      {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
-      {#if focusLost}
-        <span class="muted" data-testid="focus-lost">
-          · The window lost focus during the run: on Windows the work may have moved to slower cores, so
-          some results can be low.
-        </span>
-      {/if}
-      {#if phase.kind === 'cancelled'}<span data-testid="status">Cancelled</span>{/if}
-    {/if}
-  </p>
+        {#each SKINS as [id, label] (id)}<option value={id}>{label}</option>{/each}
+      </select>
+      <select
+        aria-label="Light or dark"
+        value={look.theme}
+        disabled={running}
+        onchange={(e) => setLook(look.skin, e.currentTarget.value as ThemeChoice)}
+        data-testid="theme"
+      >
+        <option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option>
+      </select>
+    </div>
+  </nav>
 
-  {#if phase.kind === 'error'}
-    <p class="error" data-testid="error">{phase.message}</p>
-  {/if}
-
-  {#if looping || shownLoop}
-    <label class="workers"><input type="checkbox" bind:checked={noLive} data-testid="no-live" /> No live updates</label>
-  {/if}
-
-  {#if shownLoop}
-    <h2>{shownLoop.stress ? 'Stress' : 'Endurance'}</h2>
-    {#if LoopResults}
-      <LoopResults run={shownLoop.rec} windows={shownLoop.windows} stress={shownLoop.stress} />
-    {/if}
-  {/if}
-
-  {#if view && !view.endurance}
-    <Points run={view} saved={viewSaved} />
-  {/if}
-
-  {#if rows.single.length > 0}
-    <h2>CPU — single core</h2>
-    <Results kernels={rows.single} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
-  {/if}
-
-  {#if rows.multi.length > 0}
-    <h2>CPU — all cores</h2>
-    <MultiResults kernels={rows.multi} refs={refsOf(comp('cpu-multi'))} />
-  {/if}
-
-  {#if rows.memory.length > 0}
-    <h2>Memory</h2>
-    <MemoryResults
-      kernels={rows.memory}
-      smoke={(view?.size ?? size) === 'smoke'}
-      refs={refsOf(comp('memory'))}
-      cores={view?.system.cores}
-    />
-  {/if}
-
-  {#if gpuPlan}
-    <h2>GPU</h2>
-    {#if gpuPlan.api === 'none'}
-      <GpuResults kernels={[]} info={{}} api="none" />
-    {/if}
-    {#if gpuPlan.sameGpu}
-      <div class="muted" data-testid="gpu-same">
-        <p>
-          Both choices gave what the browser reports as the same GPU, so it was tested once. If this PC has a second GPU,
-          the browser chose not to use it: web pages can only ask, and Chrome on Windows uses one
-          GPU for everything. To test the other GPU:
-        </p>
-        <ul>
-          <li>
-            Turn on <code>chrome://flags/#force-high-performance-gpu</code> and restart Chrome, or
-          </li>
-          <li>
-            Windows Settings → System → Display → Graphics → your browser → "High performance"
-            (or "Power saving"), then restart it.
-          </li>
-          <li>
-            To compare both, set one browser (e.g. Chrome) to one GPU and another (e.g. Edge) to
-            the other. <code>chrome://gpu</code> shows which GPU a browser is using.
-          </li>
-        </ul>
+  {#if !isolated}
+    <section class="sec blocked" data-testid="not-isolated">
+      <h2>This page is not cross-origin isolated</h2>
+      <p>
+        Benchmarks need the <code>Cross-Origin-Opener-Policy</code> and
+        <code>Cross-Origin-Embedder-Policy</code> headers. Serve the app with
+        <code>npm run preview</code> or <code>npm run dev</code>, not by opening the file.
+      </p>
+    </section>
+  {:else}
+    <div class="sys">
+      <div><span class="k">Browser</span><b>{shownSys ? `${shownSys.browser} ${shownSys.version.split('.')[0]}` : '…'}</b></div>
+      <div><span class="k">CPU</span><b>{shownSys?.cores ?? cores} threads</b></div>
+      <div>
+        <span class="k">Memory</span><b
+          >{shownSys?.deviceMemory ? `${shownSys.deviceMemory >= 8 ? '≥' : '~'} ${shownSys.deviceMemory} GB` : '—'}</b
+        >
       </div>
+      <div><span class="k">GPU</span><b>{gpuNames}</b></div>
+      <div><span class="k">Screen</span><b>{shownSys ? screenText(shownSys.screen) : '…'}</b></div>
+      <div class="iso" data-testid="isolated">● Isolated · fine timers on{size === 'smoke' ? ' · smoke sizes' : ''}</div>
+    </div>
+
+    <section class="sec" id="setup">
+      <div class="sh"><span class="idx">{n('setup')}</span><h2>Setup</h2><span class="aside">Choose components and a mode</span></div>
+      <div class="setup">
+        <div>
+          <fieldset disabled={running} aria-label="Components">
+            <div class="opts">
+              {#each components as c (c.id)}
+                <label class="opt" class:off={c.kernels.length === 0}>
+                  <input
+                    type="checkbox"
+                    bind:checked={selected[c.id]}
+                    disabled={c.kernels.length === 0}
+                    data-testid="component-{c.id}"
+                  />
+                  {c.name}
+                  <small
+                    >{c.kernels.length === 0
+                      ? '(not built yet)'
+                      : c.id === 'cpu-multi'
+                        ? `${testCount(c.id, c.kernels)} tests · ${workerCount ?? '?'} workers`
+                        : `${testCount(c.id, c.kernels)} tests`}</small
+                  >
+                </label>
+              {/each}
+            </div>
+            {#if needsWorkers}
+              <div class="extra">
+                <label>
+                  Workers for all-cores tests
+                  <input
+                    type="number"
+                    min="1"
+                    max={maxWorkers}
+                    step="1"
+                    bind:value={workers}
+                    onblur={() => {
+                      if (workerCount !== undefined) workers = workerCount;
+                    }}
+                    data-testid="workers"
+                  />
+                </label>
+                <span class="muted">this browser reports {cores} logical cores</span>
+              </div>
+            {/if}
+            {#if selected.gpu}
+              <div class="extra" data-testid="gpu-choice">
+                GPU to test:
+                <label><input type="radio" bind:group={gpuChoice} value="high-performance" data-testid="gpu-fast" /> Fast</label>
+                <label><input type="radio" bind:group={gpuChoice} value="low-power" data-testid="gpu-low" /> Power-saving</label>
+                <label><input type="radio" bind:group={gpuChoice} value="both" data-testid="gpu-both" /> Both</label>
+                <span class="muted">
+                  (browsers pick the GPU for each; on PCs with two GPUs this is usually the dedicated one and the
+                  built-in one)
+                </span>
+              </div>
+            {/if}
+          </fieldset>
+
+          <fieldset class="modes" disabled={running} aria-label="Mode">
+            <label class="mode"><input type="radio" bind:group={mode} value="quick" data-testid="mode-quick" /> Quick <small>a few min</small></label>
+            <label class="mode"><input type="radio" bind:group={mode} value="full" data-testid="mode-full" /> Full <small>longer, steadier</small></label>
+            <label class="mode">
+              <input type="radio" bind:group={mode} value="endurance" data-testid="mode-endurance" /> Endurance
+              {#if testMs}
+                <small class="muted">(test length: {testMs / 1000} s)</small>
+              {:else}
+                <select bind:value={minutes} data-testid="endurance-minutes">
+                  <option value={10}>10 min</option><option value={30}>30 min</option><option value={60}>60 min</option>
+                </select>
+              {/if}
+            </label>
+            <label class="mode"><input type="radio" bind:group={mode} value="stress" data-testid="mode-stress" /> Stress <small>until stopped</small></label>
+          </fieldset>
+          {#if looping}
+            <p class="muted">
+              Loops the selected parts at the same time and shows throughput over time. Memory runs its
+              all-cores copy; storage is not looped (it would wear the drive).
+              <strong data-testid="focus-hint">Keep this window in front during the run.</strong> On Windows a
+              window in the background runs on the slower cores, so those windows are not counted.
+            </p>
+          {/if}
+        </div>
+
+        <div class="go">
+          {#if phase.kind === 'running' && looping}
+            {#if mode === 'stress'}
+              <button class="run" onclick={() => stopLoop?.()} disabled={!stopLoop} data-testid="stop">Stop</button>
+            {:else}
+              <button class="run" onclick={cancel} data-testid="cancel">Cancel</button>
+            {/if}
+            <p class="prog">
+              <span data-testid="progress">{phase.current}{elapsed ? ` · ${elapsed}` : ''}</span>
+              <span class="muted" data-testid="wake">
+                {wake === 'on' ? 'screen kept on' : wake ? 'the screen may sleep (no wake lock)' : ''}
+              </span>
+              <span class="muted">· keep this window in front</span>
+            </p>
+          {:else if phase.kind === 'running'}
+            <button class="run" onclick={cancel} data-testid="cancel">Cancel</button>
+            <div class="prog">
+              <span data-testid="progress">{phase.index + 1} / {phase.total} · {phase.current}</span>
+              {#if phase.total > 0}
+                <div class="ticks">{#each { length: phase.total }, i (i)}<b class:d={i < phase.index}></b>{/each}</div>
+              {/if}
+            </div>
+          {:else}
+            <button
+              class="run"
+              onclick={run}
+              disabled={!anySelected || (needsWorkers && workerCount === undefined)}
+              data-testid="run">Run {mode === 'stress' ? 'stress test' : mode === 'endurance' ? 'endurance' : 'benchmark'}</button
+            >
+            <div class="prog">
+              {#if phase.kind === 'done'}<span data-testid="status">Done</span>{/if}
+              {#if phase.kind === 'cancelled'}<span data-testid="status">Cancelled</span>{/if}
+              {#if focusLost}
+                <span class="muted" data-testid="focus-lost">
+                  · The window lost focus during the run: on Windows the work may have moved to slower cores, so
+                  some results can be low.
+                </span>
+              {/if}
+            </div>
+          {/if}
+          {#if phase.kind === 'error'}
+            <p class="error" data-testid="error">{phase.message}</p>
+          {/if}
+          {#if looping || shownLoop}
+            <label class="extra"><input type="checkbox" bind:checked={noLive} data-testid="no-live" /> No live updates</label>
+          {/if}
+        </div>
+      </div>
+    </section>
+
+    {#if shownLoop}
+      <section class="sec" id="loop">
+        <div class="sh">
+          <span class="idx">{n('loop')}</span><h2>{shownLoop.stress ? 'Stress' : 'Endurance'}</h2>
+          <span class="aside">throughput over time</span>
+        </div>
+        {#if LoopResults}
+          <LoopResults run={shownLoop.rec} windows={shownLoop.windows} stress={shownLoop.stress} />
+        {/if}
+      </section>
     {/if}
-    {#each gpuRuns as g, i (g.target.preference)}
-      <h3 data-testid="gpu-run-{g.target.preference}">
-        {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
-      </h3>
-      <GpuResults
-        kernels={rows.gpu[i] ?? []}
-        info={g.info}
-        api={gpuPlan.api}
-        refs={refsOf(comp('gpu', g.target.preference))}
-      />
-    {/each}
-  {/if}
 
-  {#if storagePlan}
-    <h2>Storage</h2>
-    <StorageResults
-      kernels={rows.storage}
-      plan={storagePlan}
-      error={storageError}
-      cleanup={storageCleanup}
-      refs={refsOf(comp('storage'))}
+    {#if view && !view.endurance}
+      <section class="sec" id="score">
+        <div class="sh">
+          <span class="idx">{n('score')}</span><h2>Score</h2>
+          <span class="aside">{modeName(view.mode)} · {new Date(view.time).toLocaleString()}</span>
+        </div>
+        <Points run={view} saved={viewSaved} />
+      </section>
+    {/if}
+
+    {#if rows.single.length > 0}
+      <section class="sec c-cpu-single">
+        <div class="sh">
+          <span class="idx">{n('cpu-single')}</span><h2>CPU — single core</h2>
+          <span class="aside">{summary(rows.single, comp('cpu-single'))}</span>
+        </div>
+        <Results kernels={rows.single} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
+      </section>
+    {/if}
+
+    {#if rows.multi.length > 0}
+      <section class="sec c-cpu-multi">
+        <div class="sh">
+          <span class="idx">{n('cpu-multi')}</span><h2>CPU — all cores</h2>
+          <span class="aside">{summary(rows.multi, comp('cpu-multi'))}</span>
+        </div>
+        <MultiResults kernels={rows.multi} refs={refsOf(comp('cpu-multi'))} />
+      </section>
+    {/if}
+
+    {#if rows.memory.length > 0}
+      <section class="sec c-memory">
+        <div class="sh">
+          <span class="idx">{n('memory')}</span><h2>Memory</h2>
+          <span class="aside">{summary(rows.memory, comp('memory'))}</span>
+        </div>
+        <MemoryResults
+          kernels={rows.memory}
+          smoke={(view?.size ?? size) === 'smoke'}
+          refs={refsOf(comp('memory'))}
+          cores={view?.system.cores}
+        />
+      </section>
+    {/if}
+
+    {#if gpuPlan}
+      <section class="sec c-gpu">
+        <div class="sh">
+          <span class="idx">{n('gpu')}</span><h2>GPU</h2>
+          <span class="aside">{summary(rows.gpu.flat(), comp('gpu'))}</span>
+        </div>
+        {#if gpuPlan.api === 'none'}
+          <GpuResults kernels={[]} info={{}} api="none" />
+        {/if}
+        {#if gpuPlan.sameGpu}
+          <div class="muted" data-testid="gpu-same">
+            <p>
+              Both choices gave what the browser reports as the same GPU, so it was tested once. If this PC has a second
+              GPU, the browser chose not to use it: web pages can only ask, and Chrome on Windows uses one GPU for
+              everything. To test the other GPU:
+            </p>
+            <ul>
+              <li>Turn on <code>chrome://flags/#force-high-performance-gpu</code> and restart Chrome, or</li>
+              <li>
+                Windows Settings → System → Display → Graphics → your browser → "High performance" (or "Power saving"),
+                then restart it.
+              </li>
+              <li>
+                To compare both, set one browser (e.g. Chrome) to one GPU and another (e.g. Edge) to the other.
+                <code>chrome://gpu</code> shows which GPU a browser is using.
+              </li>
+            </ul>
+          </div>
+        {/if}
+        {#each gpuRuns as g, i (g.target.preference)}
+          <h3 data-testid="gpu-run-{g.target.preference}">
+            {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
+          </h3>
+          <GpuResults kernels={rows.gpu[i] ?? []} info={g.info} api={gpuPlan.api} refs={refsOf(comp('gpu', g.target.preference))} />
+        {/each}
+      </section>
+    {/if}
+
+    {#if storagePlan}
+      <section class="sec c-storage">
+        <div class="sh">
+          <span class="idx">{n('storage')}</span><h2>Storage</h2>
+          <span class="aside">{summary(rows.storage, comp('storage'))}</span>
+        </div>
+        <StorageResults
+          kernels={rows.storage}
+          plan={storagePlan}
+          error={storageError}
+          cleanup={storageCleanup}
+          refs={refsOf(comp('storage'))}
+        />
+      </section>
+    {/if}
+
+    <History
+      idx={n('history')}
+      runs={history}
+      message={historyMessage}
+      disabled={phase.kind === 'running'}
+      onopen={open}
+      onchange={(runs) => setHistory(runs)}
+      onimport={imported}
+      pending={pendingImport?.question}
+      onconfirm={(yes) =>
+        yes && pendingImport ? imported(pendingImport.runs, pendingImport.lost) : (pendingImport = undefined)}
     />
+
+    <section class="sec" id="about">
+      <div class="sh"><span class="idx">{n('about')}</span><h2>About</h2></div>
+      <p class="muted note">
+        These are browser scores: this PC's speed through this browser. WebAssembly reaches roughly 70–95 % of native
+        speed, and results move with browser versions, so each run records the browser and its version. For steady
+        numbers, keep this window in front, plug in a laptop, and use the best-performance power mode.
+      </p>
+      <p class="muted">
+        Browsers do not expose temperatures, fan speeds, power draw, the exact CPU model or raw disk access, so none
+        are shown. Everything runs on this computer: no network requests after the page loads, and results stay in
+        this browser unless you export them.
+      </p>
+    </section>
   {/if}
 
-  <History
-    runs={history}
-    message={historyMessage}
-    disabled={phase.kind === 'running'}
-    onopen={open}
-    onchange={(runs) => setHistory(runs)}
-    onimport={imported}
-    pending={pendingImport?.question}
-    onconfirm={(yes) =>
-      yes && pendingImport ? imported(pendingImport.runs, pendingImport.lost) : (pendingImport = undefined)}
-  />
-
-  <p class="muted note">
-    These are browser scores: this PC's speed through this browser. For steady numbers, keep
-    this window in front, plug in a laptop, and use the best-performance power mode.
-  </p>
-{/if}
-
-<style>
-  .banner {
-    background: #b45309;
-    color: #fff;
-    padding: 0.4rem 0.8rem;
-    margin: -1.5rem -1.5rem 1rem;
-  }
-  fieldset {
-    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-    margin: 0 0 0.75rem;
-  }
-  label {
-    display: block;
-  }
-  .workers {
-    margin-top: 0.5rem;
-  }
-  .workers input[type='number'] {
-    width: 4rem;
-  }
-  .inline {
-    display: inline;
-    margin-right: 0.75rem;
-  }
-  .off {
-    opacity: 0.6;
-  }
-</style>
+  <footer><span>Scores measure this PC through this browser.</span><span>score v{SCORE_VERSION}</span></footer>
+</div>

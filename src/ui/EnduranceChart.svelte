@@ -4,6 +4,7 @@
   // Grey bands: windows overlapping a hidden-tab period; hatched bands: another
   // window was in front. Neither is measured.
   import { chartBase } from '../lib/harness/drop.ts';
+  import { chartColors, look } from './look.svelte.ts';
 
   let {
     parts,
@@ -20,10 +21,11 @@
     windowMs: number;
   } = $props();
 
-  const COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed'];
   let canvas: HTMLCanvasElement | undefined = $state();
 
+  // Colours: the skin's CSS variables (--s1..--s5 per part), read once per draw.
   $effect(() => {
+    void look.v; // redraw when the skin or theme changes
     const c = canvas;
     const ctx = c?.getContext('2d');
     if (!c || !ctx) return;
@@ -53,8 +55,9 @@
     const L = 44, R = 22, T = 8, B = 24;
     const px = (i: number) => L + (i / n) * (w - L - R);
     const py = (v: number) => h - B - ((v - lo) / (hi - lo)) * (h - T - B);
-    const fg = getComputedStyle(c).color;
-    ctx.font = '11px system-ui, sans-serif';
+    const col = chartColors(c);
+    const fg = col.muted;
+    ctx.font = col.font;
     ctx.fillStyle = fg;
     ctx.globalAlpha = 0.15;
     for (const i of hidden) ctx.fillRect(px(i), T, px(i + 1) - px(i), h - T - B);
@@ -80,12 +83,13 @@
     }
     ctx.textAlign = 'right';
     for (let v = lo; v <= hi + 1e-9; v += 0.1) {
-      ctx.globalAlpha = 0.2;
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = col.line;
       ctx.beginPath();
       ctx.moveTo(L, py(v));
       ctx.lineTo(w - R, py(v));
       ctx.stroke();
-      ctx.globalAlpha = 0.7;
+      ctx.globalAlpha = 1;
       ctx.fillText(`${Math.round(v * 100)}%`, L - 6, py(v) + 4);
     }
     ctx.textAlign = 'center';
@@ -96,7 +100,7 @@
     ctx.lineWidth = 2;
     parts.forEach((p, k) => {
       const b = bases[k]!;
-      ctx.strokeStyle = COLORS[k % COLORS.length]!;
+      ctx.strokeStyle = col.series[k % 5]!;
       ctx.beginPath();
       let pen = false;
       p.values.forEach((v, i) => {
@@ -118,10 +122,10 @@
   });
 </script>
 
-<!-- Inline size: a lazy chunk with CSS would pull a preload helper into the page bundle. -->
-<canvas bind:this={canvas} style="display:block;width:100%;height:220px" data-testid="endurance-chart"></canvas>
+<!-- Sized by app.css (.chart): a lazy chunk with its own CSS would pull a preload helper into the page bundle. -->
+<canvas bind:this={canvas} class="chart" data-testid="endurance-chart"></canvas>
 <p class="muted">
-  {#each parts as p, k (k)}<span style:color={COLORS[k % COLORS.length]}>■</span> {p.label} &nbsp;{/each}
+  {#each parts as p, k (k)}<span style:color="var(--s{(k % 5) + 1})">■</span> {p.label} &nbsp;{/each}
   · 100% = minute 2 (middle third under 3 min)
   {#if hidden.length}<span data-testid="endurance-hidden-note">· grey: tab hidden, not measured</span>{/if}
   {#if unfocused.length}<span data-testid="endurance-unfocused-note">· hatched: another window in front, not measured</span>{/if}
