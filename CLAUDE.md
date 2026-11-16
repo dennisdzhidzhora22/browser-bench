@@ -13,7 +13,8 @@ npm run dev        dev server, 127.0.0.1:5173 (scores not valid)
 npm run preview    production build, 127.0.0.1:4173
 node scripts/make-reference.mjs <export.json> [<run id>|latest] [--name "Owner PC"] [--freeze]
                    reference entry from an exported Full run (SPEC 6); --freeze also rewrites
-                   the constants. --freeze is the owner's step: agents never run it.
+                   the constants. --freeze is the owner's step: agents never run it. A second
+                   --freeze refuses (constants already frozen) and changes nothing.
 ```
 
 A milestone is done only when `npm run check` and `npm run e2e` both pass. Report skipped

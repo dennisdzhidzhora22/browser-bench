@@ -11,12 +11,15 @@
     smoke = false,
     refs = [],
     cores,
+    shown = true,
   }: {
     kernels: KernelRecord[];
     smoke?: boolean;
     refs?: Reference[];
     /** The run's core count: an all-cores copy on another worker count gets no reference. */
     cores?: number;
+    /** False while the component's results are collapsed: the canvas has no size then, so it redraws on open. */
+    shown?: boolean;
   } = $props();
 
   const isLatency = (k: KernelRecord) => k.key.startsWith('mem_latency:');
@@ -33,8 +36,9 @@
       cell: (k) => describe(k.key).name,
       sub: (k) =>
         k.workers === undefined
-          ? `1 core · ${describe(k.key).stresses}`
-          : `${k.workers} workers · ${describe(k.key).stresses}${k.workers < 8 ? ' · few workers: total may fit in cache' : ''}`,
+          ? '· 1 core'
+          : `· ${k.workers} workers${k.workers < 8 ? ' · few workers: total may fit in cache' : ''}`,
+      tip: (k) => describe(k.key).stresses,
     },
     { head: 'Result', num: true, cell: (k) => value(k, 1), testid: 'value' },
     { head: 'Unit', cell: (k) => k.unit },
@@ -53,6 +57,7 @@
   // from the skin's CSS variables, read once per draw (after the run).
   $effect(() => {
     void look.v; // redraw when the skin or theme changes
+    if (!shown) return;
     const points = latency.filter((k) => k.valid && k.value !== null).map((k) => ({ size: sizeOf(k), ns: k.value! }));
     const r0 = refs[0];
     const refPoints = r0
@@ -148,13 +153,17 @@
         costs.
       </p>
     </div>
-    <Table
-      rows={latency}
-      cols={latencyCols}
-      rowid={(k) => `latency-row-${sizeOf(k)}`}
-      {refs}
-      refAt={2}
-      ref={(r, k) => ref(r, k, 2)}
-    />
+    <details class="sub" data-testid="latency-table">
+      <summary>Show table ({latency.length} sizes)</summary>
+      <Table
+        rows={latency}
+        cols={latencyCols}
+        rowid={(k) => `latency-row-${sizeOf(k)}`}
+        {refs}
+        refAt={2}
+        ref={(r, k) => ref(r, k, 2)}
+        {refv}
+      />
+    </details>
   </div>
 {/if}

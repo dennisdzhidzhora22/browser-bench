@@ -17,7 +17,7 @@
   } = $props();
 
   const cols: Column[] = [
-    { head: 'Test', cell: (k) => describe(k.key).name, sub: (k) => describe(k.key).stresses },
+    { head: 'Test', cell: (k) => describe(k.key).name, tip: (k) => describe(k.key).stresses },
     { head: 'Result', num: true, cell: (k) => value(k), testid: 'value' },
     { head: 'Unit', cell: (k) => k.unit },
     { head: 'Median', num: true, cell: (k) => (k.ms ? `${k.ms.median.toFixed(1)} ms` : '—') },

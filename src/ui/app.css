@@ -8,8 +8,8 @@
   --bg: #fff;
   --card: transparent;
   --text: #111;
-  --muted: #7a7a7a;
-  --faint: #c9c9c9;
+  --muted: #757575;
+  --faint: #939393;
   --line: #ececec;
   --rule: var(--text);
   --hover: #f6f6f6;
@@ -26,7 +26,7 @@
   --s4: #c27c0e;
   --s5: #6b4fd8;
   --radius: 0;
-  --pad: 32px 0;
+  --pad: 24px 0;
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
   --big: 200;
@@ -36,7 +36,7 @@
   --bg: #0e0e0f;
   --text: #ededed;
   --muted: #8b8b8f;
-  --faint: #3a3a3e;
+  --faint: #616165;
   --line: #232326;
   --hover: #161618;
   --accent: #ededed;
@@ -59,7 +59,7 @@
   --card: #fff;
   --text: #16181d;
   --muted: #6b7280;
-  --faint: #d5d9df;
+  --faint: #8a8d91;
   --line: #e3e6ea;
   --rule: var(--line);
   --hover: #f3f6fc;
@@ -84,7 +84,7 @@
   --card: #171a21;
   --text: #e6e8ec;
   --muted: #9aa1ad;
-  --faint: #343a46;
+  --faint: #636771;
   --line: #262a33;
   --hover: #1c2029;
   --accent: #6b9cff;
@@ -106,7 +106,7 @@
   --card: #fff;
   --text: #13261a;
   --muted: #5d7465;
-  --faint: #b9cbbf;
+  --faint: #839088;
   --line: #d3e0d7;
   --rule: var(--line);
   --hover: #eaf3ed;
@@ -132,7 +132,7 @@
   --card: #0f1311;
   --text: #d6e5dc;
   --muted: #7d9286;
-  --faint: #2c3a32;
+  --faint: #5a655f;
   --line: #1f2a24;
   --hover: #131a16;
   --accent: #3ddc84;
@@ -154,7 +154,7 @@
   --card: #fff;
   --text: #1c1830;
   --muted: #6e6886;
-  --faint: #d9d3ee;
+  --faint: #8d899b;
   --line: #e6e1f5;
   --rule: var(--line);
   --hover: #f6f3fe;
@@ -179,7 +179,7 @@
   --card: #1c1830;
   --text: #ece9f7;
   --muted: #a39dbd;
-  --faint: #3b3456;
+  --faint: #6a657f;
   --line: #2c2645;
   --hover: #231e3a;
   --accent: #a78bfa;
@@ -220,8 +220,7 @@ code,
   font-family: inherit;
 }
 .muted,
-.k,
-.desc {
+.k {
   color: var(--muted);
 }
 .muted {
@@ -433,7 +432,7 @@ fieldset {
   padding-bottom: 3px;
   border-bottom: 1.5px solid transparent;
 }
-.mode:has(:checked) {
+.mode:has(> input:checked) {
   color: var(--text);
   border-bottom-color: var(--accent);
 }
@@ -578,8 +577,7 @@ fieldset {
   font-size: 13px;
   margin-top: 10px;
 }
-.pts .badge,
-.tag {
+.pts .badge {
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.08em;
@@ -633,25 +631,23 @@ th {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
-  padding: 0 10px 8px;
+  padding: 0 10px 6px;
   border-bottom: 1px solid var(--rule);
   vertical-align: bottom;
 }
 td {
-  padding: 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
 }
-tbody tr:hover td {
+:root:not([data-running]) table:not(.pts) tbody tr:hover td {
   background: var(--hover);
 }
 .r {
   text-align: right;
 }
-td .muted,
-.desc {
-  display: block;
+td .muted {
   font-size: 12px;
 }
 td.ref {
@@ -741,7 +737,7 @@ td.ref {
   border-left-color: var(--bad);
 }
 .hist td {
-  padding: 8px 6px;
+  padding: 4px 6px;
   font-size: 14px;
 }
 .hist td:last-child {
@@ -794,7 +790,7 @@ footer {
   gap: 0;
   border-radius: 99px;
   overflow: hidden;
-  background: var(--line);
+  background: var(--faint);
 }
 :root:not([data-skin='minimal']) .ticks b {
   height: 6px;
@@ -951,7 +947,7 @@ footer {
   border-radius: 8px;
   padding: 5px 12px;
 }
-:root:not([data-skin='minimal']) .mode:has(:checked) {
+:root:not([data-skin='minimal']) .mode:has(> input:checked) {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
@@ -962,6 +958,49 @@ footer {
 .pts td {
   text-align: left;
 }
-.pts tr:hover td {
-  background: none;
+
+/* Collapsible component results (owner decision 2026-11-16): the summary is the section heading */
+details.res > summary {
+  list-style: none;
+  cursor: pointer;
+}
+details.res > summary::-webkit-details-marker {
+  display: none;
+}
+details.res > summary.sh::before {
+  content: '▸';
+  width: 1em;
+  color: var(--muted);
+  font-size: 12px;
+}
+details.res[open] > summary.sh::before {
+  content: '▾';
+}
+details.res:not([open]) > summary.sh {
+  margin-bottom: 0;
+}
+.sec:has(> details.res:not([open])) {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+summary.sh .aside.x {
+  color: var(--bad);
+}
+summary.sh .aside.n {
+  color: var(--warn);
+}
+details.sub > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 10px 0 6px;
+}
+/* Visually hidden, read by screen readers */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

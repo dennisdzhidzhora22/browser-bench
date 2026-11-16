@@ -9,7 +9,7 @@
     /** Header tooltip. */
     title?: string;
     cell: (k: KernelRecord) => string;
-    /** Muted text after the cell's text (its own line). */
+    /** Muted text after the cell's text (same line). */
     sub?: (k: KernelRecord) => string;
     tip?: (k: KernelRecord) => string;
     testid?: string;
@@ -119,9 +119,9 @@
         {#if barRef}
           {@const b = bar(barRef, k)}
           <td class="rel" title={b?.tip ?? ''}
-            ><div class="relbar">
+            ><div class="relbar" aria-hidden="true">
               {#if b}<i class:down={b.down} style:left="{b.left}%" style:width="{b.width}%"></i>{/if}
-            </div></td
+            </div>{#if b}<span class="vh">{b.tip}</span>{/if}</td
           >
         {/if}
         {@render cells(after, k)}

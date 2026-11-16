@@ -8,7 +8,12 @@
 
   const both = (k: KernelRecord) => k.spread !== undefined && k.singleSpread !== undefined;
   const cols: Column[] = [
-    { head: 'Test', cell: (k) => describe(k.key).name, sub: (k) => `${k.workers} workers` },
+    {
+      head: 'Test',
+      cell: (k) => describe(k.key).name,
+      sub: (k) => `· ${k.workers} workers`,
+      tip: (k) => describe(k.key).stresses,
+    },
     { head: 'All cores', num: true, cell: (k) => value(k), testid: 'value' },
     { head: '1 core', num: true, cell: (k) => (k.valid ? fmt(k.single) : '—') },
     { head: 'Unit', cell: (k) => k.unit },

@@ -5,7 +5,11 @@
 // - Picks the run by id, or with "latest" (the default) the newest Full standard-size Benchmark run.
 // - Refuses runs that are smoke size, not Full, Endurance, from another scoreVersion, or that have
 //   a component missing, partial or without points (fallback GPU, scaled storage, worker count not
-//   the core count), or any kernel that is invalid, hidden or failed its output check.
+//   the core count), a counted GPU that is not the Fast (high-performance) one, or any kernel that is
+//   invalid, hidden or failed its output check. Points, partial and notes are checked on the run as
+//   rescored by this build, not as saved.
+// - --freeze refuses when constants.ts is already frozen (no PROVISIONAL block), so a second
+//   --freeze changes nothing.
 // - --freeze first rewrites the constants in src/lib/scoring/constants.ts from this run (3 significant
 //   digits, SCORE_VERSION unchanged, "provisional" comments replaced). Only the owner runs this.
 // - Writes (or replaces, by name) the entry in src/lib/scoring/references.json: name, scoreVersion,
@@ -35,7 +39,11 @@ let freeze = false;
 const pos = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--freeze') freeze = true;
-  else if (args[i] === '--name') name = args[++i] ?? fail('--name needs a value');
+  else if (args[i] === '--name') {
+    const v = args[++i];
+    if (v === undefined || v.startsWith('--')) fail('--name needs a value');
+    name = v;
+  }
   else if (args[i].startsWith('--')) fail(`unknown option ${args[i]}`);
   else pos.push(args[i]);
 }
@@ -71,18 +79,44 @@ const comps = run.components ?? [];
 /** The component that counts for `id` (GPU "Both": the Fast one), as lib/scoring/score.ts counted(). */
 const counted = (id, list = comps) => {
   const all = list.filter((c) => c.id === id);
-  return id === 'gpu' && all.length > 1 ? all.find((c) => c.gpu?.preference === 'high-performance') : all[0];
+  return id === 'gpu' && all.length > 1 ? all.find((c) => !c.gpu || c.gpu.preference === 'high-performance') : all[0];
 };
+
+// The app's own scoring code, loaded through Vite (as the unit tests do). Points, partial and notes
+// are checked on the rescored run: a saved run's points may come from older constants.
+const { createServer } = await import('vite');
+const server = await createServer({
+  root,
+  configFile: false,
+  server: { middlewareMode: true, hmr: false, ws: false },
+  appType: 'custom',
+  optimizeDeps: { noDiscovery: true },
+  logLevel: 'silent',
+});
+async function rescored() {
+  server.moduleGraph.invalidateAll(); // re-read constants.ts (after --freeze)
+  const { rescore } = await server.ssrLoadModule('/src/lib/scoring/score.ts');
+  return rescore(run);
+}
+let scored;
+try {
+  scored = await rescored();
+} catch (e) {
+  await server.close();
+  fail(`cannot score the run: ${e.message}`);
+}
 for (const id of COMPONENTS) {
   const c = counted(id);
   if (!c) {
     problems.push(`${id}: not run`);
     continue;
   }
+  const s = counted(id, scored.components) ?? c;
   if (c.error) problems.push(`${id}: ${c.error}`);
-  if (c.note) problems.push(`${id}: ${c.note}`);
-  if (c.partial) problems.push(`${id}: partial`);
-  if (c.points == null) problems.push(`${id}: no points`);
+  if (id === 'gpu' && c.gpu && c.gpu.preference !== 'high-performance') problems.push('gpu: not the Fast GPU');
+  if (s.note) problems.push(`${id}: ${s.note}`);
+  if (s.partial) problems.push(`${id}: partial`);
+  if (s.points == null) problems.push(`${id}: no points`);
   for (const k of c.kernels ?? []) {
     if (!k.valid || k.value == null) problems.push(`${id}/${k.key}: invalid${k.error ? ` (${k.error})` : ''}`);
     if (k.hidden) problems.push(`${id}/${k.key}: tab was hidden`);
@@ -95,7 +129,10 @@ for (const m of constantsTs.matchAll(/^\s*'([\w-]+)\/([\w:]+)': [\d.e+-]+,$/gm))
   const k = counted(m[1])?.kernels?.find((x) => x.key === m[2]);
   if (counted(m[1]) && !k) problems.push(`${m[1]}/${m[2]}: missing (component partial)`);
 }
-if (problems.length) fail(`refusing run ${run.id} (${run.time}):\n  - ${problems.join('\n  - ')}`);
+if (problems.length) {
+  await server.close();
+  fail(`refusing run ${run.id} (${run.time}):\n  - ${problems.join('\n  - ')}`);
+}
 
 /** Every kernel result of the counted components, by `<component>/<defKey>`. */
 const results = {};
@@ -133,23 +170,14 @@ if (freeze) {
     writeFileSync(CONSTANTS_TS, before);
     console.error('make-reference: constants.ts restored; references.json not written.');
   });
+  // Ctrl+C would skip the exit handler: turn it into a failed exit so the restore runs.
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(130));
   console.log(`constants.ts: ${Object.keys(results).length} constants frozen from run ${run.id}; SCORE_VERSION stays ${scoreVersion}.`);
 }
 
 // Points by the app's own code, against the constants as they are now (after --freeze).
-const { createServer } = await import('vite');
-const server = await createServer({
-  root,
-  configFile: false,
-  server: { middlewareMode: true, hmr: false, ws: false },
-  appType: 'custom',
-  optimizeDeps: { noDiscovery: true },
-  logLevel: 'silent',
-});
-let scored;
 try {
-  const { rescore } = await server.ssrLoadModule('/src/lib/scoring/score.ts');
-  scored = rescore(run);
+  if (freeze) scored = await rescored();
 } finally {
   await server.close();
 }

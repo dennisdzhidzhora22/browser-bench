@@ -71,11 +71,29 @@ export function setLook(skin: Skin, theme: ThemeChoice) {
 /** Run start / end: hold OS theme changes while measuring, apply them after. */
 export function freezeLook(on: boolean) {
   look.frozen = on;
+  // CSS turns row hover off while this is set (no restyle under the pointer mid-test).
+  root.toggleAttribute('data-running', on);
   if (!on && look.pending) apply();
 }
 
-/** Reads the colours a chart needs, once per draw (never during measurement). */
-export function chartColors(el: Element) {
+export type ChartColors = ReturnType<typeof readColors>;
+const colorCache = new WeakMap<Element, { v: number; c: ChartColors }>();
+
+/**
+ * The colours a chart needs (never read during measurement). Cached per
+ * element and look version: a live Endurance chart redraws every window, but
+ * the style is only read again after a skin or theme change.
+ */
+export function chartColors(el: Element): ChartColors {
+  const v = look.v;
+  const hit = colorCache.get(el);
+  if (hit && hit.v === v) return hit.c;
+  const c = readColors(el);
+  colorCache.set(el, { v, c });
+  return c;
+}
+
+function readColors(el: Element) {
   const s = getComputedStyle(el);
   const v = (n: string) => s.getPropertyValue(n).trim();
   return {

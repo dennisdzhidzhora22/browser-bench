@@ -316,15 +316,40 @@
   const testCount = (id: ComponentId, all: readonly KernelDef[]) =>
     (id === 'gpu' ? gpuTests.length : all.length) + multiKernels(id).length;
   const modeName = (m: string) => (m === 'full' ? 'Full' : m === 'endurance' ? 'Endurance' : 'Quick');
-  /** "1085 pts · 11 tests · all checks passed" beside a component's heading. */
+  /** A failed check (red dot in the table), as Table.svelte counts it. */
+  const failedK = (k: KernelRecord) => k.checksumOk === false || (!k.valid && !k.hidden);
+  /** "1085 pts · 11 tests · all checks passed" (or "2 failed", "1 noisy") in a component's summary row. */
   function summary(ks: KernelRecord[], c?: ComponentRecord): string {
-    const bad = ks.filter((k) => !k.valid).length;
+    const failed = ks.filter(failedK).length;
+    const noisy = ks.filter((k) => !failedK(k) && (k.hidden || k.noisy)).length;
+    const checks = [failed && `${failed} failed`, noisy && `${noisy} noisy`].filter(Boolean).join(' · ');
     return (
       (c?.points != null ? `${c.points} pts · ` : '') +
       `${ks.length} test${ks.length === 1 ? '' : 's'} · ` +
-      (bad ? `${bad} not valid` : 'all checks passed')
+      (checks || (ks.length ? 'all checks passed' : 'no results yet'))
     );
   }
+  /** Status class for the summary text: x = a failure, n = noisy only. */
+  const sumClass = (ks: KernelRecord[]) =>
+    ks.some(failedK) ? 'x' : ks.some((k) => k.hidden || k.noisy) ? 'n' : '';
+
+  // Component results start closed (the Score section is the overview). A
+  // component with a failed check, or an error notice, opens by itself. The
+  // user's own open/close choice per component lasts for this page session.
+  let userOpen: Record<string, boolean> = $state({});
+  const isOpen = (id: string, auto: boolean) => userOpen[id] ?? auto;
+  function toggled(id: string, auto: boolean, e: Event) {
+    const open = (e.currentTarget as HTMLDetailsElement).open;
+    if (open === auto) delete userOpen[id];
+    else userOpen[id] = open;
+  }
+  const autoOpen = $derived({
+    'cpu-single': rows.single.some(failedK),
+    'cpu-multi': rows.multi.some(failedK),
+    memory: rows.memory.some(failedK),
+    gpu: gpuPlan?.api === 'none' || rows.gpu.flat().some(failedK),
+    storage: !!storageError || storagePlan?.ok === false || rows.storage.some(failedK),
+  });
   /** Layout D numbers the sections that are shown, in page order. */
   const order = $derived(
     [
@@ -824,90 +849,126 @@
 
     {#if rows.single.length > 0}
       <section class="sec c-cpu-single">
-        <div class="sh">
-          <span class="idx">{n('cpu-single')}</span><h2>CPU — single core</h2>
-          <span class="aside">{summary(rows.single, comp('cpu-single'))}</span>
-        </div>
-        <Results kernels={rows.single} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
+        <details
+          class="res"
+          data-testid="section-cpu-single"
+          open={isOpen('cpu-single', autoOpen['cpu-single'])}
+          ontoggle={(e) => toggled('cpu-single', autoOpen['cpu-single'], e)}
+        >
+          <summary class="sh">
+            <span class="idx">{n('cpu-single')}</span><h2>CPU — single core</h2>
+            <span class="aside {sumClass(rows.single)}" data-testid="summary-cpu-single">{summary(rows.single, comp('cpu-single'))}</span>
+          </summary>
+          <Results kernels={rows.single} refs={refsOf(comp('cpu-single'))} prefix="cpu-single" />
+        </details>
       </section>
     {/if}
 
     {#if rows.multi.length > 0}
       <section class="sec c-cpu-multi">
-        <div class="sh">
-          <span class="idx">{n('cpu-multi')}</span><h2>CPU — all cores</h2>
-          <span class="aside">{summary(rows.multi, comp('cpu-multi'))}</span>
-        </div>
-        <MultiResults kernels={rows.multi} refs={refsOf(comp('cpu-multi'))} />
+        <details
+          class="res"
+          data-testid="section-cpu-multi"
+          open={isOpen('cpu-multi', autoOpen['cpu-multi'])}
+          ontoggle={(e) => toggled('cpu-multi', autoOpen['cpu-multi'], e)}
+        >
+          <summary class="sh">
+            <span class="idx">{n('cpu-multi')}</span><h2>CPU — all cores</h2>
+            <span class="aside {sumClass(rows.multi)}" data-testid="summary-cpu-multi">{summary(rows.multi, comp('cpu-multi'))}</span>
+          </summary>
+          <MultiResults kernels={rows.multi} refs={refsOf(comp('cpu-multi'))} />
+        </details>
       </section>
     {/if}
 
     {#if rows.memory.length > 0}
       <section class="sec c-memory">
-        <div class="sh">
-          <span class="idx">{n('memory')}</span><h2>Memory</h2>
-          <span class="aside">{summary(rows.memory, comp('memory'))}</span>
-        </div>
-        <MemoryResults
-          kernels={rows.memory}
-          smoke={(view?.size ?? size) === 'smoke'}
-          refs={refsOf(comp('memory'))}
-          cores={view?.system.cores}
-        />
+        <details
+          class="res"
+          data-testid="section-memory"
+          open={isOpen('memory', autoOpen['memory'])}
+          ontoggle={(e) => toggled('memory', autoOpen['memory'], e)}
+        >
+          <summary class="sh">
+            <span class="idx">{n('memory')}</span><h2>Memory</h2>
+            <span class="aside {sumClass(rows.memory)}" data-testid="summary-memory">{summary(rows.memory, comp('memory'))}</span>
+          </summary>
+          <MemoryResults
+            kernels={rows.memory}
+            smoke={(view?.size ?? size) === 'smoke'}
+            refs={refsOf(comp('memory'))}
+            cores={view?.system.cores}
+            shown={isOpen('memory', autoOpen.memory)}
+          />
+        </details>
       </section>
     {/if}
 
     {#if gpuPlan}
       <section class="sec c-gpu">
-        <div class="sh">
-          <span class="idx">{n('gpu')}</span><h2>GPU</h2>
-          <span class="aside">{summary(rows.gpu.flat(), comp('gpu'))}</span>
-        </div>
-        {#if gpuPlan.api === 'none'}
-          <GpuResults kernels={[]} info={{}} api="none" />
-        {/if}
-        {#if gpuPlan.sameGpu}
-          <div class="muted" data-testid="gpu-same">
-            <p>
-              Both choices gave what the browser reports as the same GPU, so it was tested once. If this PC has a second
-              GPU, the browser chose not to use it: web pages can only ask, and Chrome on Windows uses one GPU for
-              everything. To test the other GPU:
-            </p>
-            <ul>
-              <li>Turn on <code>chrome://flags/#force-high-performance-gpu</code> and restart Chrome, or</li>
-              <li>
-                Windows Settings → System → Display → Graphics → your browser → "High performance" (or "Power saving"),
-                then restart it.
-              </li>
-              <li>
-                To compare both, set one browser (e.g. Chrome) to one GPU and another (e.g. Edge) to the other.
-                <code>chrome://gpu</code> shows which GPU a browser is using.
-              </li>
-            </ul>
-          </div>
-        {/if}
-        {#each gpuRuns as g, i (g.target.preference)}
-          <h3 data-testid="gpu-run-{g.target.preference}">
-            {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
-          </h3>
-          <GpuResults kernels={rows.gpu[i] ?? []} info={g.info} api={gpuPlan.api} refs={refsOf(comp('gpu', g.target.preference))} />
-        {/each}
+        <details
+          class="res"
+          data-testid="section-gpu"
+          open={isOpen('gpu', autoOpen['gpu'])}
+          ontoggle={(e) => toggled('gpu', autoOpen['gpu'], e)}
+        >
+          <summary class="sh">
+            <span class="idx">{n('gpu')}</span><h2>GPU</h2>
+            <span class="aside {sumClass(rows.gpu.flat())}" data-testid="summary-gpu">{summary(rows.gpu.flat(), comp('gpu'))}</span>
+          </summary>
+          {#if gpuPlan.api === 'none'}
+            <GpuResults kernels={[]} info={{}} api="none" />
+          {/if}
+          {#if gpuPlan.sameGpu}
+            <div class="muted" data-testid="gpu-same">
+              <p>
+                Both choices gave what the browser reports as the same GPU, so it was tested once. If this PC has a second
+                GPU, the browser chose not to use it: web pages can only ask, and Chrome on Windows uses one GPU for
+                everything. To test the other GPU:
+              </p>
+              <ul>
+                <li>Turn on <code>chrome://flags/#force-high-performance-gpu</code> and restart Chrome, or</li>
+                <li>
+                  Windows Settings → System → Display → Graphics → your browser → "High performance" (or "Power saving"),
+                  then restart it.
+                </li>
+                <li>
+                  To compare both, set one browser (e.g. Chrome) to one GPU and another (e.g. Edge) to the other.
+                  <code>chrome://gpu</code> shows which GPU a browser is using.
+                </li>
+              </ul>
+            </div>
+          {/if}
+          {#each gpuRuns as g, i (g.target.preference)}
+            <h3 data-testid="gpu-run-{g.target.preference}">
+              {g.target.preference === 'high-performance' ? 'Fast GPU' : 'Power-saving GPU'}
+            </h3>
+            <GpuResults kernels={rows.gpu[i] ?? []} info={g.info} api={gpuPlan.api} refs={refsOf(comp('gpu', g.target.preference))} />
+          {/each}
+        </details>
       </section>
     {/if}
 
     {#if storagePlan}
       <section class="sec c-storage">
-        <div class="sh">
-          <span class="idx">{n('storage')}</span><h2>Storage</h2>
-          <span class="aside">{summary(rows.storage, comp('storage'))}</span>
-        </div>
-        <StorageResults
-          kernels={rows.storage}
-          plan={storagePlan}
-          error={storageError}
-          cleanup={storageCleanup}
-          refs={refsOf(comp('storage'))}
-        />
+        <details
+          class="res"
+          data-testid="section-storage"
+          open={isOpen('storage', autoOpen['storage'])}
+          ontoggle={(e) => toggled('storage', autoOpen['storage'], e)}
+        >
+          <summary class="sh">
+            <span class="idx">{n('storage')}</span><h2>Storage</h2>
+            <span class="aside {sumClass(rows.storage)}" data-testid="summary-storage">{summary(rows.storage, comp('storage'))}</span>
+          </summary>
+          <StorageResults
+            kernels={rows.storage}
+            plan={storagePlan}
+            error={storageError}
+            cleanup={storageCleanup}
+            refs={refsOf(comp('storage'))}
+          />
+        </details>
       </section>
     {/if}
 

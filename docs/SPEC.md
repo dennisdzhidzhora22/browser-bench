@@ -423,15 +423,19 @@ How it works (M6):
   reads an exported history file and takes the given run, or by default the newest Full
   standard-size Benchmark run. It refuses smoke runs, non-Full runs, Endurance runs, another
   `scoreVersion`, a component that is missing, partial, without points or with a note
-  (fallback GPU, scaled storage file, worker count not the core count), a missing kernel, and any
-  kernel that is invalid, hidden or failed its output check. It writes (or replaces, by name)
+  (fallback GPU, scaled storage file, worker count not the core count), a counted GPU that is
+  not the Fast (high-performance) one ("gpu: not the Fast GPU"), a missing kernel, and any
+  kernel that is invalid, hidden or failed its output check. Points, partial and notes are
+  checked on the run as rescored by this build, never as saved. `--name` needs a value that is
+  not another option. It writes (or replaces, by name)
   that entry in `references.json`: name (default "Owner PC"), `scoreVersion`, every result of the
   counted components by `<component>/<defKey>`, and points recomputed by `lib/scoring/score.ts`
   (loaded through Vite, as the unit tests do). With `--freeze` it first rewrites every constant
   in `constants.ts` from that run (3 significant digits), keeps `SCORE_VERSION = 1` (nothing was
   frozen before) and replaces the "provisional" comment with where the numbers came from; the
   reference points are then computed against the new constants (about 1000 each). If anything
-  after the rewrite fails, `constants.ts` is restored, so the two files never disagree. It prints
+  after the rewrite fails or the script is interrupted (Ctrl+C), `constants.ts` is restored, so
+  the two files never disagree. A second `--freeze` refuses (constants already frozen). It prints
   what it did. The Benchmark "window lost focus" note is not saved (section 4), so the script
   cannot check it: the owner exports a run during which the window stayed in front. `--freeze` is
   the owner's step; agents do not run it.
@@ -602,8 +606,15 @@ How it works (M8):
   waits for that read so it never paints mid-test), then numbered sections. Numbers count only
   the sections shown: Setup, Endurance/Stress, Score, one per component, Recent runs, About.
   Setup holds the component checkboxes with test counts, the mode choice (Endurance with its
-  length), the Run button and a tick per step (drawn between kernels, as before). Each
-  component heading shows "points · tests · all checks passed" (or how many are not valid).
+  length), the Run button and a tick per step (drawn between kernels, as before).
+- **Compact results (owner decision, 2026-11-16).** The full results page fits in about one to
+  one and a half screens. Each component's results sit in a `<details>` that starts closed
+  (`data-testid="section-<component>"`); its `<summary>` is the section heading: number, name,
+  then "points · tests · all checks passed" (or "N failed" in red, "N noisy" in amber; hidden
+  counts as noisy), `data-testid="summary-<component>"`. The Score section stays the overview.
+  A component with a failed check, the GPU "neither WebGPU nor WebGL2" notice, or a storage
+  error opens by itself. The user's own open/close choice per component lasts for the page
+  session (not saved). Rows are tighter (5 px cell padding) in every skin.
 - **Score.** `Points.svelte` keeps its table (the same rows and cells), laid out by CSS as a big
   total plus one column per component. With a matching reference, each column shows
   "vs. <name> <points> · ±x %" (the gap comes from a `data-gap` attribute shown by CSS); without
@@ -611,12 +622,19 @@ How it works (M8):
 - **Tables.** `Table.svelte` adds a thin "vs. ref" bar column after the reference column when a
   reference exists: a tick in the middle is the reference, the bar grows right when this result
   is better and left (amber) when worse, half the cell = 2× (log scale); smaller-is-better units
-  (`ns`) are inverted. The test's `stresses` text is the muted line under its name. The Check cell
-  gets a status dot (green ok, amber noisy/hidden, red failed).
+  (`ns`) are inverted. The bar's value ("+6.4 % vs. <name>") is in the cell's tooltip and in
+  visually hidden text for screen readers. The test's `stresses` text is the tooltip (`title`)
+  of its name, not a second line; short context (worker count, "1 core") stays on the same line,
+  muted. The Check cell gets a status dot (green ok, amber noisy/hidden, red failed). Row hover
+  is off during a run (`<html data-running>`, set by `freezeLook`), so the pointer never
+  restyles a row mid-test.
 - **Charts.** The memory latency canvas and the Endurance chart read their colours from CSS
   variables (`--plot`, `--line`, `--muted`, `--bg`, `--s1`…`--s5`) with one `getComputedStyle`
-  per draw, and redraw when the skin or theme changes. The first reference's latency curve is
-  drawn dashed.
+  once per skin/theme change (cached per canvas and `look.v`), and redraw when the skin or theme
+  changes. The first reference's latency curve is drawn dashed. The latency chart stays in the
+  Memory section; its 17-row table is in its own closed `<details>` ("Show table",
+  `data-testid="latency-table"`) and has the vs. ref bar too. The chart redraws when the Memory
+  section opens (a closed canvas has no size).
 - **Skins.** `app.css` holds layout D and four skins as custom-property sets on
   `<html data-skin="clean|terminal|vivid|minimal" data-theme="light|dark">` (default Minimal),
   each with a light and a dark set, plus small overrides (cards for A/B/C, monospace and `> `
@@ -626,7 +644,9 @@ How it works (M8):
   resolves the OS setting and follows its changes, except during a run (applied after it).
   A tiny inline script in `index.html` sets both attributes before first paint (no flash); it
   is inline, so COOP/COEP do not affect it, and the size script counts it with `index.html`.
-- **Budget.** Page load is 46.7 kB gzip (was 40.1 kB before M8).
+- **Contrast.** Muted text is at least 4.5:1 on its background in every skin and theme;
+  `--faint` (control borders, progress ticks) at least 3:1.
+- **Budget.** Page load is 47.5 kB gzip (was 40.1 kB before M8).
 
 ## 13. Risks
 
