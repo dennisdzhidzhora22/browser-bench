@@ -38,7 +38,9 @@ jobs:
 
       # The headers are what make the page cross-origin isolated; never ship without them.
       - name: Check dist/_headers
-        run: grep -q "Cross-Origin-Embedder-Policy: require-corp" dist/_headers
+        run: |
+          grep -q "Cross-Origin-Embedder-Policy: require-corp" dist/_headers
+          grep -q "Cross-Origin-Opener-Policy: same-origin" dist/_headers
 
       - uses: cloudflare/wrangler-action@v3
         with:
