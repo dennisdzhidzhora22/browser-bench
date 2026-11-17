@@ -7,6 +7,7 @@
 //
 // Structure only: no assertion depends on how fast anything ran.
 import { execFile } from 'node:child_process';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { cpuKernels } from '../../src/lib/bench/cpu/index.ts';
@@ -21,6 +22,13 @@ import {
 } from '../../src/lib/harness/protocol.ts';
 
 const RUNNER = fileURLToPath(new URL('./barrier-runner.mjs', import.meta.url));
+/**
+ * Allowed clock slip between worker threads, in ms. 2 ms on a roomy machine. On a small or
+ * shared machine (a CI runner: CI=true, or under 8 cores for up to 4 workers plus the main
+ * thread) threads are descheduled between reading the clock and touching the barrier, so the
+ * slip can reach a scheduler time slice. Still structure only: the order is what is checked.
+ */
+const SKEW = process.env['CI'] || availableParallelism() < 8 ? 50 : 2;
 const DEADLOCK_MS = 20_000;
 /** An aborted group must answer well before the 30 s barrier timeout. */
 const ABORT_REPLY_MS = 5_000;
@@ -107,7 +115,6 @@ function expectWellFormed(g: Group, min: number, max: number): number {
     // Busy tail: nobody stops before the last worker has passed its window, so every worker's
     // interval overlaps every other worker's whole window (the all-cores score has no lone tail).
     if (g.count > 1) {
-      const SKEW = 2;
       let lastPassed = -Infinity;
       let firstEnd = Infinity;
       for (let w = 0; w < g.count; w++) {
@@ -181,7 +188,6 @@ describe('all-cores barrier on real threads (mix kernel)', () => {
     const out = await run(single(4, 25, { minSamples: 4, maxSamples: 4 }));
     const g = out.groups[0]!;
     // Checked per sample in expectWellFormed; here the property is spelled out once more.
-    const SKEW = 2;
     for (let s = 0; s < 4; s++) {
       const lastPassed = Math.max(...[0, 1, 2, 3].map((w) => g.times[at(g, s, w)]! + 25));
       const firstEnd = Math.min(...[0, 1, 2, 3].map((w) => g.times[at(g, s, w) + 1]!));
@@ -227,7 +233,7 @@ describe('all-cores barrier on real threads (mix kernel)', () => {
     const g = out.groups[0]!;
     const n = expectWellFormed(g, 5, 5);
     // The threads share one clock (timeOrigin + now); allow a little skew between them.
-    const SKEW_MS = 2;
+    const SKEW_MS = SKEW;
     for (let s = 1; s < n; s++) {
       let prevEnd = -Infinity;
       for (let w = 0; w < g.count; w++) prevEnd = Math.max(prevEnd, g.times[at(g, s - 1, w) + 1]!);
