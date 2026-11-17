@@ -345,7 +345,7 @@ describe('make-reference: --freeze (on a copy of constants.ts)', () => {
 });
 
 describe('real scoring files (frozen state)', () => {
-  it('constants.ts is frozen and references.json holds exactly the "Owner PC" entry at the current SCORE_VERSION', () => {
+  it('constants.ts is frozen and references.json holds exactly the "Reference PC" entry at the current SCORE_VERSION', () => {
     const ts = readFileSync(REAL_CONSTANTS, 'utf8');
     expect(ts).not.toContain('PROVISIONAL');
     expect(ts).toContain(`FROZEN (M8) for SCORE_VERSION ${SCORE_VERSION}`);
@@ -356,7 +356,7 @@ describe('real scoring files (frozen state)', () => {
     }>;
     expect(list).toHaveLength(1);
     const e = list[0]!;
-    expect(e.name).toBe('Owner PC');
+    expect(e.name).toBe('Reference PC');
     expect(e.scoreVersion).toBe(SCORE_VERSION);
     expect(Object.keys(e.points).sort()).toEqual(['cpu-multi', 'cpu-single', 'gpu', 'memory', 'storage', 'total']);
     // Rounding the constants to 3 digits moves the reference's own points by a hair around 1000.

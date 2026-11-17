@@ -1,6 +1,6 @@
 [
   {
-    "name": "Owner PC",
+    "name": "Reference PC",
     "scoreVersion": 1,
     "results": {
       "cpu-single/sha256": 345.004,
