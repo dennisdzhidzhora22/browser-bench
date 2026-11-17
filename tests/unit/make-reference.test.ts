@@ -134,14 +134,21 @@ describe('make-reference: refusals', () => {
     expectRefused(make([r], r.id), 'scoreVersion');
   });
 
-  it('refuses a partial component', () => {
-    const r = edit(good(), 'memory', (c) => void (c.partial = true));
-    expectRefused(make([r], r.id), 'memory: partial');
+  // The script rescores before validating, so hand-set points/partial/note are recomputed: each fixture
+  // below is built from a real cause instead.
+  it('refuses a partial component (memory all-cores copy on a worker count other than the core count)', () => {
+    const r = edit(good(), 'memory', (c) => void (c.kernels.find((k) => k.workers !== undefined)!.workers = 8));
+    expectRefused(make([r], r.id), 'memory: 8 workers, not 16', 'memory: partial');
   });
 
-  it('refuses a component without points', () => {
-    const r = edit(good(), 'storage', (c) => void (c.points = null));
-    expectRefused(make([r], r.id), 'storage: no points');
+  it('refuses a component without points (every kernel invalid)', () => {
+    const r = edit(good(), 'storage', (c) => {
+      for (const k of c.kernels) {
+        k.valid = false;
+        k.value = null;
+      }
+    });
+    expectRefused(make([r], r.id), 'storage: no points', 'storage: no valid results');
   });
 
   it('refuses a missing component', () => {
@@ -173,9 +180,23 @@ describe('make-reference: refusals', () => {
     expectRefused(make([r], r.id), 'output check failed');
   });
 
-  it('refuses a component that carries a note (fallback GPU, scaled storage, "window lost focus" style notes)', () => {
-    const r = edit(good(), 'cpu-single', (c) => void (c.note = 'window lost focus during this part'));
-    expectRefused(make([r], r.id), 'cpu-single: window lost focus');
+  it('refuses a component that carries a note (scaled-down storage file)', () => {
+    const r = edit(good(), 'storage', (c) => void (c.scaled = true));
+    expectRefused(make([r], r.id), 'storage: smaller test file');
+  });
+
+  it('refuses a component that carries a note (WebGL2 fallback GPU kernel)', () => {
+    const r = good();
+    const fast = r.components.find((c) => c.id === 'gpu' && c.gpu?.preference === 'high-performance')!;
+    fast.gpu!.api = 'webgl2';
+    expectRefused(make([r], r.id), 'gpu: fallback');
+  });
+
+  it('refuses a counted GPU that is not the Fast (high-performance) one', () => {
+    const r = good();
+    // Only the low-power GPU was tested, so it is the one that counts.
+    r.components = r.components.filter((c) => !(c.id === 'gpu' && c.gpu?.preference === 'high-performance'));
+    expectRefused(make([r], r.id), 'gpu: not the Fast GPU');
   });
 
   it('refuses a run missing a kernel a constant needs (the component would be partial)', () => {
@@ -188,6 +209,17 @@ describe('make-reference: refusals', () => {
     writeFileSync(f, '{"format":"other","runs":[]}');
     expect(makeRaw(f).err).toContain('not a browser-bench export');
     expect(makeRaw(f, '--bogus').err).toContain('unknown option --bogus');
+  });
+
+  it('--name followed by a flag (or nothing) fails with "--name needs a value"', () => {
+    const run = good();
+    for (const args of [[run.id, '--name', '--freeze'], [run.id, '--name']]) {
+      const res = make([run], ...args);
+      expect(res.code).toBe(1);
+      expect(res.err).toContain('--name needs a value');
+      expect(readFileSync(referencesJson, 'utf8')).toBe(pristineReferences);
+      expect(readFileSync(constantsTs, 'utf8')).toBe(pristineConstants);
+    }
   });
 });
 

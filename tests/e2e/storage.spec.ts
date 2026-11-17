@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openResults } from './helpers.ts';
 
 // Storage tests (docs/SPEC.md, 3.5, M5). Smoke size unless a test says otherwise; nothing here asserts on speed.
 // OPFS is per browser context, and Playwright gives every test a fresh context, so tests cannot see each other's files.
@@ -51,6 +52,7 @@ async function runAndWait(page: Page, timeout = 120_000): Promise<void> {
   await expect(page.getByTestId('status')).toHaveText('Done', { timeout });
   await expect(page.getByTestId('error')).toHaveCount(0);
   await expect(page.getByTestId('cancel')).toHaveCount(0);
+  await openResults(page);
 }
 
 /** The first results table holds exactly these rows, in this order, all valid, each with a number (or a dash). */

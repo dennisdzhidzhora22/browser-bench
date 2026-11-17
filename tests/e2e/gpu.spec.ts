@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openResults } from './helpers.ts';
 
 // GPU tests (docs/SPEC.md, 3.4, M4). Smoke sizes only; nothing here asserts on speed.
 // Headless Chrome may lack WebGPU (SPEC risk R2): those tests report as skipped, with the reason.
@@ -17,6 +18,7 @@ async function runAndWait(page: Page): Promise<void> {
   await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
   await expect(page.getByTestId('error')).toHaveCount(0);
   await expect(page.getByTestId('cancel')).toHaveCount(0);
+  await openResults(page);
 }
 
 /** Every row in the (first) results table is valid, with these ids in this order. */

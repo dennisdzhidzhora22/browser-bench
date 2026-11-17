@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openResults } from './helpers.ts';
 
 // WebGL2 fallback (docs/SPEC.md, 3.4). This Chrome ignores --disable-webgpu (navigator.gpu stays and an
 // adapter is still found), so the fallback is forced with --disable-gpu: navigator.gpu exists but
@@ -43,6 +44,7 @@ async function runAndWait(page: Page): Promise<void> {
   await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
   await expect(page.getByTestId('error')).toHaveCount(0);
   await expect(page.getByTestId('cancel')).toHaveCount(0);
+  await openResults(page);
 }
 
 /** Every row in the (first) results table is valid, with these ids in this order. */

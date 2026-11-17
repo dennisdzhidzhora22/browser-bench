@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openResults } from './helpers.ts';
 
 // Ids of the CPU single-core kernels, in run order (src/lib/bench/cpu/index.ts).
 const CPU_KERNELS = [
@@ -81,6 +82,7 @@ test.describe('M1 smoke', () => {
     await page.getByTestId('run').click();
 
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
+    await openResults(page);
     await expect(page.getByTestId('error')).toHaveCount(0);
     await expect(page.getByTestId('cancel')).toHaveCount(0);
     await expect(page.getByTestId('run')).toBeEnabled();
@@ -310,6 +312,7 @@ test.describe('M2 all cores', () => {
     await page.getByTestId('run').click();
 
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    await openResults(page);
     await expect(page.getByTestId('error')).toHaveCount(0);
     await expect(page.getByTestId('cancel')).toHaveCount(0);
     await expect(page.getByTestId('run')).toBeEnabled();
@@ -357,6 +360,7 @@ test.describe('M2 all cores', () => {
     await page.getByTestId('run').click();
 
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 180_000 });
+    await openResults(page);
     await expect(page.getByTestId('error')).toHaveCount(0);
     await expect(page.getByTestId('results')).toBeVisible();
     await expect(page.getByTestId('multi-results')).toBeVisible();
@@ -554,6 +558,7 @@ test.describe('M3 memory', () => {
     await page.getByTestId('run').click();
 
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    await openResults(page);
     await expect(page.getByTestId('error')).toHaveCount(0);
     await expect(page.getByTestId('cancel')).toHaveCount(0);
     await expect(page.getByTestId('run')).toBeEnabled();
@@ -572,9 +577,10 @@ test.describe('M3 memory', () => {
       .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
     expect(memRows).toEqual(['mem-row-mem_fill', 'mem-row-mem_copy', MULTI_ROW]);
     await expect(page.getByTestId('mem-row-mem_fill')).toContainText('1 core');
-    await expect(page.getByTestId('mem-row-mem_copy')).toContainText('counted once');
+    // The description ("counted once") is the tooltip of the test name now, not text in the row.
+    await expect(page.getByTestId('mem-row-mem_copy').locator('td').first()).toHaveAttribute('title', /counted once/);
     await expect(page.getByTestId(MULTI_ROW)).toContainText('2 workers');
-    await expect(page.getByTestId(MULTI_ROW)).toContainText('counted once');
+    await expect(page.getByTestId(MULTI_ROW).locator('td').first()).toHaveAttribute('title', /counted once/);
     // Fewer than 8 workers: the row warns that the total may fit in cache.
     await expect(page.getByTestId(MULTI_ROW)).toContainText('few workers');
 
@@ -646,6 +652,7 @@ test.describe('M3 memory', () => {
     await page.getByTestId('workers').fill('2');
     await page.getByTestId('run').click();
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 120_000 });
+    await openResults(page);
     const checks = page.getByTestId('checksum');
     await expect(checks).toHaveCount(MEMORY_CHECKS);
     for (const cell of await checks.all()) {
@@ -665,6 +672,7 @@ test.describe('M3 memory', () => {
     await page.getByTestId('run').click();
 
     await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 300_000 });
+    await openResults(page);
     await expect(page.getByTestId('error')).toHaveCount(0);
     await expect(page.getByTestId('results')).toBeVisible();
     await expect(page.getByTestId('multi-results')).toBeVisible();

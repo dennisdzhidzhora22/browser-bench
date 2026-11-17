@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openResults } from './helpers.ts';
 
 // M8: four switchable skins and light/dark/auto (src/ui/look.svelte.ts, index.html pre-paint script, the two
 // selects in the top bar of App.svelte). Structure only; nothing here asserts on speed.
@@ -241,6 +242,7 @@ test.describe('M8 skins', () => {
         await page.getByTestId('run').click();
         await expect(page.getByTestId('status')).toHaveText('Done', { timeout: 60_000 });
         await expect(page.getByTestId('error')).toHaveCount(0);
+        await openResults(page);
 
         await expect(page.getByTestId('results')).toBeVisible();
         for (const k of CPU_KERNELS) await expect(page.getByTestId(`row-${k}`), k).toBeVisible();
