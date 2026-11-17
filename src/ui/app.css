@@ -8,7 +8,7 @@
   --bg: #fff;
   --card: transparent;
   --text: #111;
-  --muted: #757575;
+  --muted: #6e6e6e;
   --faint: #939393;
   --line: #ececec;
   --rule: var(--text);
@@ -62,7 +62,7 @@
   --faint: #8a8d91;
   --line: #e3e6ea;
   --rule: var(--line);
-  --hover: #f3f6fc;
+  --hover: #f8fafd;
   --accent: #2563eb;
   --soft: #dbe6fd;
   --on-accent: #fff;
@@ -109,7 +109,7 @@
   --faint: #839088;
   --line: #d3e0d7;
   --rule: var(--line);
-  --hover: #eaf3ed;
+  --hover: #f1f7f3;
   --accent: #0f7a3d;
   --soft: #dcefe3;
   --on-accent: #fff;
@@ -968,13 +968,13 @@ details.res > summary::-webkit-details-marker {
   display: none;
 }
 details.res > summary.sh::before {
-  content: '▸';
+  content: '▸' / '';
   width: 1em;
   color: var(--muted);
   font-size: 12px;
 }
 details.res[open] > summary.sh::before {
-  content: '▾';
+  content: '▾' / '';
 }
 details.res:not([open]) > summary.sh {
   margin-bottom: 0;
