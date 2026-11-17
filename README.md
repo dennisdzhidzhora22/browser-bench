@@ -51,6 +51,13 @@ npm run preview    # open http://127.0.0.1:4173
 
 `npm run dev` works for UI work, but dev-build scores are not valid.
 
+## Hosting
+
+Every push to `main` runs `npm run check` in GitHub Actions, then deploys `dist/` to a
+Cloudflare Worker with static assets (`wrangler.jsonc`). `dist/_headers` sets the COOP/COEP
+headers; the deploy fails if they are missing. Secrets: `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID`.
+
 ## How it's built
 
 - **Kernels:** Rust compiled to WebAssembly, no dependencies, no glue code in the timed path.

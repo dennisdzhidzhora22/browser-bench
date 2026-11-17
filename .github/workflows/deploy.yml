@@ -1,0 +1,47 @@
+# Build, check and deploy to Cloudflare (Worker with static assets) on every push to main.
+# Secrets: CLOUDFLARE_API_TOKEN ("Edit Cloudflare Workers" template), CLOUDFLARE_ACCOUNT_ID.
+# The browser tests (npm run e2e) need a real Chrome with a GPU, so they run locally only.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - run: npm ci
+
+      # Build + type check + Rust lint + unit tests + size budget.
+      - run: npm run check
+
+      # The headers are what make the page cross-origin isolated; never ship without them.
+      - name: Check dist/_headers
+        run: grep -q "Cross-Origin-Embedder-Policy: require-corp" dist/_headers
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy

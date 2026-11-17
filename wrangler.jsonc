@@ -1,0 +1,10 @@
+// Cloudflare Worker that serves the built app as static files (no Worker script).
+// dist/_headers (from public/_headers) sets COOP/COEP, which the app needs.
+// Deployed by .github/workflows/deploy.yml; see README "Hosting".
+{
+  "name": "browser-bench",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist"
+  }
+}
