@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { SCORE_VERSION } from '../../src/lib/scoring/constants.ts';
 import type { RunRecord } from '../../src/lib/store/schema.ts';
 import { completeRecord } from './store-support.ts';
@@ -13,6 +13,10 @@ import { completeRecord } from './store-support.ts';
 const REPO = resolve(import.meta.dirname, '../..');
 const REAL_CONSTANTS = join(REPO, 'src/lib/scoring/constants.ts');
 const REAL_REFERENCES = join(REPO, 'src/lib/scoring/references.json');
+// constants.ts as it was before the M8 freeze (git show 6a4ca90:src/lib/scoring/constants.ts), kept as a
+// fixture so these tests do not depend on whether the real files are provisional or frozen. `.txt` keeps it out
+// of the TypeScript and lint passes.
+const PROVISIONAL_CONSTANTS = join(REPO, 'tests/fixtures/constants.provisional.ts.txt');
 
 let tmp: string;
 let constantsTs: string;
@@ -30,9 +34,18 @@ beforeAll(() => {
   symlinkSync(join(REPO, 'node_modules'), join(tmp, 'node_modules'), 'junction');
   constantsTs = join(tmp, 'src/lib/scoring/constants.ts');
   referencesJson = join(tmp, 'src/lib/scoring/references.json');
-  pristineConstants = readFileSync(constantsTs, 'utf8');
-  pristineReferences = readFileSync(referencesJson, 'utf8');
+  // The temp copy starts provisional with no references, whatever state the real files are in.
+  pristineConstants = readFileSync(PROVISIONAL_CONSTANTS, 'utf8');
+  pristineReferences = '[]\n';
+  writeFileSync(constantsTs, pristineConstants);
+  writeFileSync(referencesJson, pristineReferences);
 }, 60_000);
+
+afterEach(() => {
+  // The real files must be exactly as they were after every test.
+  expect(readFileSync(REAL_CONSTANTS, 'utf8')).toBe(realBefore.constants);
+  expect(readFileSync(REAL_REFERENCES, 'utf8')).toBe(realBefore.references);
+});
 
 afterAll(() => {
   // Remove the junction itself first so the recursive delete cannot follow it into the real node_modules.
@@ -328,5 +341,25 @@ describe('make-reference: --freeze (on a copy of constants.ts)', () => {
   it('a refused run never freezes anything', () => {
     const r = good({ size: 'smoke' });
     expectRefused(make([r], r.id, '--freeze'), 'smoke');
+  });
+});
+
+describe('real scoring files (frozen state)', () => {
+  it('constants.ts is frozen and references.json holds exactly the "Owner PC" entry at the current SCORE_VERSION', () => {
+    const ts = readFileSync(REAL_CONSTANTS, 'utf8');
+    expect(ts).not.toContain('PROVISIONAL');
+    expect(ts).toContain(`FROZEN (M8) for SCORE_VERSION ${SCORE_VERSION}`);
+    const list = JSON.parse(readFileSync(REAL_REFERENCES, 'utf8')) as Array<{
+      name: string;
+      scoreVersion: number;
+      points: Record<string, number>;
+    }>;
+    expect(list).toHaveLength(1);
+    const e = list[0]!;
+    expect(e.name).toBe('Owner PC');
+    expect(e.scoreVersion).toBe(SCORE_VERSION);
+    expect(Object.keys(e.points).sort()).toEqual(['cpu-multi', 'cpu-single', 'gpu', 'memory', 'storage', 'total']);
+    // Rounding the constants to 3 digits moves the reference's own points by a hair around 1000.
+    for (const [id, p] of Object.entries(e.points)) expect(Math.abs(p - 1000), id).toBeLessThanOrEqual(2);
   });
 });
