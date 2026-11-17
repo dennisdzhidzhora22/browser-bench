@@ -251,6 +251,18 @@ select,
   font-size: 13px;
   cursor: pointer;
 }
+/* The open dropdown list is drawn by the OS: give it the page's own solid colours, or the
+   inherited text colour can land on the OS's white list (unreadable in dark themes). */
+option {
+  background: var(--bg);
+  color: var(--text);
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
 :root[data-skin='minimal'] button:not(.run),
 :root[data-skin='minimal'] select,
 :root[data-skin='minimal'] .button {
