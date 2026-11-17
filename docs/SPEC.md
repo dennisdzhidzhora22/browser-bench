@@ -660,7 +660,20 @@ How it works (M8):
 
 ## 14. Open items for later
 
-- Hosting target and domain.
+- Hosting target and domain. Chosen: Cloudflare Pages (2026-11-17), built by a GitHub Action
+  (the Cloudflare build image has no Rust toolchain) and uploaded with Wrangler;
+  `public/_headers` supplies COOP/COEP.
+- Weak tests from the M8 round-2 review (archived 2026-11-17; revisit if needed):
+  1. `tests/e2e/sections.spec.ts` latency-chart test asserts `canvas.width > 0`, which an
+     undrawn canvas (300 px default) also passes. Assert drawn pixels or
+     `width === round(clientWidth × devicePixelRatio)`.
+  2. "a user close of an auto-opened section holds" checks only right after the click. Switch
+     to another saved run and back, then assert it is still closed.
+  3. No test switches between saved runs: failed run A (auto-open) → clean run B (closed) →
+     back to A (open). Optionally assert the memory chart redraws.
+  4. `tests/unit/make-reference.test.ts` never exercises the restore path: make the copied
+     `score.ts` throw after the `--freeze` write and assert exit 1, `constants.ts` restored and
+     `references.json` unchanged.
 - Firefox and Safari support.
 - More reference machines.
 - Online result sharing.
